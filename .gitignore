@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+sdkconfig.old
+*.bin
+*.elf
+*.map
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
