@@ -1,0 +1,14 @@
+services:
+  esp-idf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/project
+      - esp-idf-cache:/root/.espressif
+    working_dir: /project
+    stdin_open: true
+    tty: true
+
+volumes:
+  esp-idf-cache:
