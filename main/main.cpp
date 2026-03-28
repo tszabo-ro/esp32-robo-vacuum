@@ -15,11 +15,17 @@ static void blink_task(void* arg)
 {
     gpio_reset_pin(LED_PIN);
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(LED_PIN, 1); // off (active-low)
 
     bool led_on = false;
     while (true) {
-        led_on = !led_on;
-        gpio_set_level(LED_PIN, led_on ? 0 : 1); // active-low on SuperMini
+        if (wifi_is_connected()) {
+            led_on = !led_on;
+            gpio_set_level(LED_PIN, led_on ? 0 : 1);
+        } else {
+            gpio_set_level(LED_PIN, 1); // off when disconnected
+            led_on = false;
+        }
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }

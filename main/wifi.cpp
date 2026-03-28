@@ -110,6 +110,12 @@ esp_err_t wifi_init_sta()
     return connect_with(ssid, pass);
 }
 
+bool wifi_is_connected()
+{
+    if (!s_wifi_initialized) return false;
+    return xEventGroupGetBits(s_wifi_events) & CONNECTED_BIT;
+}
+
 esp_err_t wifi_set_credentials(const char* ssid, const char* password)
 {
     nvs_handle_t handle;

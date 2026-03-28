@@ -9,3 +9,6 @@ esp_err_t wifi_init_sta();
 
 // Save WiFi credentials to NVS and (re)connect.
 esp_err_t wifi_set_credentials(const char* ssid, const char* password);
+
+// Returns true if WiFi is connected and has an IP address.
+bool wifi_is_connected();
