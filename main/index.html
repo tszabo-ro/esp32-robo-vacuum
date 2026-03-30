@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neato D5 Controller</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#111;color:#e0e0e0;max-width:600px;margin:0 auto;padding:8px}
+nav{display:flex;gap:4px;margin-bottom:12px}
+nav button{flex:1;padding:10px;border:none;background:#222;color:#aaa;cursor:pointer;font-size:14px;border-radius:4px}
+nav button.active{background:#333;color:#fff}
+section{display:none}
+section.active{display:block}
+h2{font-size:16px;margin-bottom:8px;color:#888}
+.card{background:#1a1a1a;border-radius:6px;padding:12px;margin-bottom:8px}
+.row{display:flex;justify-content:space-between;padding:4px 0}
+.row .label{color:#888}
+.actions{display:flex;gap:8px;margin-top:8px}
+.actions button{flex:1;padding:8px;border:none;border-radius:4px;cursor:pointer;font-size:13px}
+.btn-start{background:#2a5a2a;color:#4f4}
+.btn-stop{background:#5a2a2a;color:#f44}
+.btn-dock{background:#2a3a5a;color:#4af}
+#log-output{height:50vh;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;background:#0a0a0a;color:#0c0;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all}
+.cmd-bar{display:flex;gap:4px;margin-top:8px}
+.cmd-bar input{flex:1;padding:8px;background:#1a1a1a;border:1px solid #333;color:#0f0;font-family:monospace;border-radius:4px}
+.cmd-bar button{padding:8px 16px;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer}
+.field{margin-bottom:8px}
+.field label{display:block;font-size:12px;color:#888;margin-bottom:2px}
+.field input{width:100%;padding:8px;background:#1a1a1a;border:1px solid #333;color:#fff;border-radius:4px}
+.save-btn{padding:8px 16px;background:#2a5a2a;color:#4f4;border:none;border-radius:4px;cursor:pointer;margin-top:4px}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot-on{background:#4f4}.dot-off{background:#f44}
+</style>
+</head>
+<body>
+<nav>
+<button class="active" onclick="tab('status')">Status</button>
+<button onclick="tab('console')">Console</button>
+<button onclick="tab('settings')">Settings</button>
+</nav>
+
+<section id="status" class="active">
+<div class="card">
+<h2>Vacuum</h2>
+<div class="row"><span class="label">State</span><span id="v-state">--</span></div>
+<div class="row"><span class="label">Battery</span><span id="v-battery">--</span></div>
+<div class="actions">
+<button class="btn-start" onclick="cmd('start')">Start</button>
+<button class="btn-stop" onclick="cmd('stop')">Stop</button>
+<button class="btn-dock" onclick="cmd('return_to_base')">Dock</button>
+</div>
+</div>
+<div class="card">
+<h2>Connectivity</h2>
+<div class="row"><span class="label">WiFi</span><span id="w-status">--</span></div>
+<div class="row"><span class="label">MQTT</span><span id="m-status">--</span></div>
+<div class="row"><span class="label">Free Heap</span><span id="heap">--</span></div>
+</div>
+</section>
+
+<section id="console">
+<div id="log-output"></div>
+<div class="cmd-bar">
+<input id="cmd-input" placeholder="Type command..." onkeydown="if(event.key==='Enter')sendCmd()">
+<button onclick="sendCmd()">Send</button>
+</div>
+</section>
+
+<section id="settings">
+<div class="card">
+<h2>WiFi</h2>
+<div class="field"><label>SSID</label><input id="wifi-ssid"></div>
+<div class="field"><label>Password</label><input id="wifi-pass" type="password"></div>
+<button class="save-btn" onclick="saveWifi()">Save &amp; Connect</button>
+</div>
+<div class="card">
+<h2>MQTT Broker</h2>
+<div class="field"><label>URI</label><input id="mqtt-uri" placeholder="mqtt://192.168.1.100"></div>
+<button class="save-btn" onclick="saveMqtt()">Save &amp; Connect</button>
+</div>
+</section>
+
+<script>
+const MAX_LINES=500;
+let ws;
+
+function tab(id){
+  document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function connect(){
+  ws=new WebSocket('ws://'+location.host+'/ws');
+  ws.onmessage=e=>{
+    const m=JSON.parse(e.data);
+    if(m.type==='log') appendLog(m.data);
+    else if(m.type==='console_out') appendLog('[exit: '+m.ret+']');
+  };
+  ws.onclose=()=>setTimeout(connect,2000);
+  ws.onerror=()=>ws.close();
+}
+
+function appendLog(text){
+  const el=document.getElementById('log-output');
+  const d=document.createElement('div');
+  d.textContent=text;
+  el.appendChild(d);
+  while(el.children.length>MAX_LINES) el.removeChild(el.firstChild);
+  el.scrollTop=el.scrollHeight;
+}
+
+function sendCmd(){
+  const input=document.getElementById('cmd-input');
+  const c=input.value.trim();
+  if(!c||!ws||ws.readyState!==1) return;
+  appendLog('> '+c);
+  ws.send(JSON.stringify({type:'console_in',cmd:c}));
+  input.value='';
+}
+
+function cmd(action){
+  fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({command:action})});
+}
+
+function saveWifi(){
+  fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ssid:document.getElementById('wifi-ssid').value,
+      password:document.getElementById('wifi-pass').value})})
+    .then(r=>r.json()).then(j=>{if(!j.ok)alert(j.error||'Failed')});
+}
+
+function saveMqtt(){
+  fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({uri:document.getElementById('mqtt-uri').value})})
+    .then(r=>r.json()).then(j=>{if(!j.ok)alert(j.error||'Failed')});
+}
+
+function refreshStatus(){
+  fetch('/api/status').then(r=>r.json()).then(s=>{
+    document.getElementById('v-state').textContent=s.vacuum.state;
+    document.getElementById('v-battery').textContent=s.vacuum.battery+'%';
+    const wd=s.wifi.connected;
+    document.getElementById('w-status').innerHTML=
+      '<span class="status-dot '+(wd?'dot-on':'dot-off')+'"></span>'+(wd?s.wifi.ssid:'Disconnected');
+    const md=s.mqtt.connected;
+    document.getElementById('m-status').innerHTML=
+      '<span class="status-dot '+(md?'dot-on':'dot-off')+'"></span>'+(md?(s.mqtt.broker||'Connected'):'Disconnected');
+    document.getElementById('heap').textContent=s.heap_free+' bytes';
+    if(s.mqtt.broker) document.getElementById('mqtt-uri').placeholder=s.mqtt.broker;
+  }).catch(()=>{});
+}
+
+connect();
+refreshStatus();
+setInterval(refreshStatus,3000);
+</script>
+</body>
+</html>

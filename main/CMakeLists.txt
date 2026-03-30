@@ -4,16 +4,21 @@ idf_component_register(
 	"wifi.cpp" 
 	"console.cpp"
 	"vacuum.cpp"
+	"mqtt.cpp"
+	"webserver.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         console
         esp_driver_gpio
         esp_driver_usb_serial_jtag
+        esp_http_server
         esp_wifi
         nvs_flash
         mqtt
         esp_event
         json
+    EMBED_TXTFILES
+        "index.html"
 )
 
 # Set C++ standard for this component
