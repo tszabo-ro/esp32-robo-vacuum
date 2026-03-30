@@ -13,6 +13,7 @@ idf_component_register(
         nvs_flash
         mqtt
         esp_event
+        json
 )
 
 # Set C++ standard for this component
@@ -22,5 +23,4 @@ target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_20)
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wall
     -Wextra
-    -Wpedantic
 )
