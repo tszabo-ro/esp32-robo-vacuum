@@ -1,5 +1,9 @@
 idf_component_register(
-    SRCS "main.cpp" "wifi.cpp" "console.cpp"
+    SRCS 
+    	"main.cpp" 
+	"wifi.cpp" 
+	"console.cpp"
+	"vacuum.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         console
