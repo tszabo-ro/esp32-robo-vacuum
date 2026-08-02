@@ -1,0 +1,15 @@
+# Partition layout for OTA on the 4MB ESP32-C3 SuperMini.
+#
+# There is deliberately no factory partition: the bootloader falls back to
+# ota_0 when otadata is blank, so dropping it gives each slot ~1.9MB instead of
+# splitting 4MB three ways. A 1.1MB app therefore keeps ~75% headroom.
+#
+# ota_0 sits at the conventional 0x10000, so a plain serial flash still writes
+# the app to the slot the bootloader picks on a blank otadata.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x4000,
+otadata,  data, ota,     0xd000,   0x2000,
+phy_init, data, phy,     0xf000,   0x1000,
+ota_0,    app,  ota_0,   0x10000,  0x1F0000,
+ota_1,    app,  ota_1,   0x200000, 0x1F0000,

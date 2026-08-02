@@ -1,4 +1,7 @@
 #pragma once
 
-// Start the serial console with wifi_set and wifi_status commands.
-void console_init();
+class OtaUpdater;
+
+// Start the serial console with wifi_set, wifi_status and ota_update commands.
+// `ota` must outlive the console.
+void console_init(OtaUpdater& ota);

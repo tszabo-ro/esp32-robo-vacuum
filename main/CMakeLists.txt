@@ -6,6 +6,7 @@ idf_component_register(
 	"vacuum.cpp"
 	"mqtt.cpp"
 	"webserver.cpp"
+	"ota.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         console
@@ -17,6 +18,10 @@ idf_component_register(
         mqtt
         esp_event
         json
+        app_update
+        esp_http_client
+        esp_https_ota
+        esp-tls
     EMBED_TXTFILES
         "index.html"
 )
