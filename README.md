@@ -13,6 +13,19 @@ ESP32-C3 SuperMini based controller for Neato D5 robot vacuum, enabling Home Ass
 - ESP32-C3 SuperMini
 - Neato D5 Robot Vacuum
 
+The robot's debug port is `RX | 3.3V | TX | GND`, wired crossover to the ESP
+(robot RX to ESP TX, robot TX to ESP RX) and it supplies 3.3V to power the ESP.
+The link runs at 115200 baud, matching the serial terminal's default.
+
+## Reference
+
+[`docs/neato-serial-protocol.md`](docs/neato-serial-protocol.md) is the Neato
+Botvac serial command reference, vendored verbatim from
+[OpenNeato](https://github.com/renjfk/OpenNeato) (MIT, see
+[`docs/OpenNeato-LICENSE`](docs/OpenNeato-LICENSE)). It covers the command set,
+response formats and state machines. Corrections belong upstream rather than in
+this copy.
+
 ## Development Setup
 
 ### Prerequisites
