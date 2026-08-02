@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include "esp_log.h"
+#include "freertos/task.h"
 
 static constexpr const char* TAG = "vacuum";
 
@@ -65,6 +66,21 @@ void Vacuum::tick()
     }
 
     xSemaphoreGive(mutex_);
+}
+
+void Vacuum::start_simulation()
+{
+    xTaskCreate(simulation_task, "vacuum_sim", 2048, this, 5, nullptr);
+}
+
+void Vacuum::simulation_task(void* arg)
+{
+    auto* self = static_cast<Vacuum*>(arg);
+
+    while (true) {
+        self->tick();
+        vTaskDelay(pdMS_TO_TICKS(SIM_TICK_MS));
+    }
 }
 
 VacuumStatus Vacuum::status()

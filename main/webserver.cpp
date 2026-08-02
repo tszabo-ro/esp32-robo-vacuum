@@ -65,6 +65,7 @@ esp_err_t WebServer::start()
             .user_ctx = this,
             .is_websocket = r.websocket,
             .handle_ws_control_frames = r.websocket,
+            .supported_subprotocol = nullptr,
         };
         httpd_register_uri_handler(server_, &uri);
     }

@@ -199,7 +199,6 @@ void MqttClient::publish_task(void* arg)
     auto* self = static_cast<MqttClient*>(arg);
 
     while (true) {
-        self->vacuum_.tick();
         self->publish_state();
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
