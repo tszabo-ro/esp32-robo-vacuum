@@ -48,7 +48,10 @@ static void network_services_task(void* arg)
 {
     auto* services = static_cast<NetworkServices*>(arg);
 
-    while (!wifi_is_connected()) {
+    // Either interface will do: when the station cannot connect, the fallback
+    // access point still needs to serve the web interface so the device can be
+    // re-provisioned.
+    while (!wifi_has_network()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
@@ -57,17 +60,25 @@ static void network_services_task(void* arg)
         ESP_LOGE(TAG, "Web server failed to start");
     }
 
+    // The rest needs a real network, not just the rescue access point. Waiting
+    // indefinitely is deliberate: the station may take a while, and a good image
+    // must not be rolled back merely because the router was slow to come back.
+    while (!wifi_is_connected()) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
     // init() warns on its own when no broker is stored yet; the broker can
     // still be set later from the web UI, which restarts the client.
     if (services->mqtt.init() == ESP_OK) {
         ESP_ERROR_CHECK(services->mqtt.start());
     }
 
-    // Health check for a freshly installed image: WiFi is up and the web server
-    // is serving, so this build can still be updated remotely. Confirming any
-    // less would risk keeping an image that cannot be replaced over the air.
-    // MQTT is deliberately excluded - an unreachable broker is a config problem,
-    // not a reason to discard working firmware.
+    // Health check for a freshly installed image: the station is on the network
+    // and the web server is serving, so this build can still be updated
+    // remotely. Confirming any less would risk keeping an image that cannot be
+    // replaced over the air - which is why reaching only the fallback access
+    // point does not count. MQTT is excluded too: an unreachable broker is a
+    // configuration problem, not a reason to discard working firmware.
     if (web_err == ESP_OK) {
         OtaUpdater::mark_running_image_valid();
     }

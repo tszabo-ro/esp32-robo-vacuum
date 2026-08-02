@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -25,6 +28,18 @@ static constexpr int RETRIES_BEFORE_REPORTING_FAILURE = 5;
 static constexpr uint32_t RECONNECT_BASE_MS = 1000;
 static constexpr uint32_t RECONNECT_MAX_MS = 60000;
 
+// The fallback access point. Without it, credentials that stop working - a new
+// router, a changed password, or the NVS erase that nvs_flash_init() performs
+// when it finds no free pages - would leave no way into a sealed device.
+static constexpr uint8_t AP_CHANNEL = 1;
+static constexpr uint8_t AP_MAX_CONNECTIONS = 2;
+static constexpr size_t AP_MIN_WPA2_PASSWORD = 8;
+
+// Placeholder, so the rescue network is not open by default. This value is
+// public in the repository: set your own from the web interface, which stores
+// it in NVS and takes precedence over this.
+static constexpr const char* DEFAULT_AP_PASSWORD = "neato-setup";
+
 static EventGroupHandle_t s_wifi_events;
 static constexpr int CONNECTED_BIT = BIT0;
 static constexpr int FAIL_BIT = BIT1;
@@ -32,9 +47,96 @@ static int s_retry_count = 0;
 static bool s_wifi_initialized = false;
 static esp_timer_handle_t s_reconnect_timer = nullptr;
 static uint32_t s_reconnect_delay_ms = RECONNECT_BASE_MS;
+static bool s_wifi_started = false;
+static bool s_ap_active = false;
+static esp_netif_t* s_ap_netif = nullptr;
+static std::string s_ap_ssid;
+
+static esp_err_t ensure_wifi_initialized();
+
+static std::string build_ap_ssid()
+{
+    uint8_t mac[6] = {};
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "neato-%02x%02x%02x", mac[3], mac[4], mac[5]);
+    return buf;
+}
+
+static void load_ap_password(char* out, size_t len)
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
+        size_t stored = len;
+        esp_err_t err = nvs_get_str(handle, "ap_pass", out, &stored);
+        nvs_close(handle);
+        if (err == ESP_OK) return;
+    }
+    strncpy(out, DEFAULT_AP_PASSWORD, len - 1);
+}
+
+// Brings up the rescue network. Runs alongside the station (APSTA) so retries
+// continue while it is up.
+static esp_err_t start_ap()
+{
+    if (s_ap_active) return ESP_OK;
+
+    ESP_ERROR_CHECK(ensure_wifi_initialized());
+    if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
+
+    s_ap_ssid = build_ap_ssid();
+
+    char password[65] = {};
+    load_ap_password(password, sizeof(password));
+    const bool secured = strlen(password) >= AP_MIN_WPA2_PASSWORD;
+    if (!secured) {
+        ESP_LOGW(TAG, "AP password shorter than %d characters, starting an open network",
+                 static_cast<int>(AP_MIN_WPA2_PASSWORD));
+    }
+
+    wifi_config_t cfg = {};
+    strncpy(reinterpret_cast<char*>(cfg.ap.ssid), s_ap_ssid.c_str(), sizeof(cfg.ap.ssid) - 1);
+    cfg.ap.ssid_len = s_ap_ssid.size();
+    strncpy(reinterpret_cast<char*>(cfg.ap.password), password, sizeof(cfg.ap.password) - 1);
+    cfg.ap.channel = AP_CHANNEL;
+    cfg.ap.max_connection = AP_MAX_CONNECTIONS;
+    cfg.ap.authmode = secured ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &cfg));
+    if (!s_wifi_started) {
+        ESP_ERROR_CHECK(esp_wifi_start());
+        s_wifi_started = true;
+    }
+
+    s_ap_active = true;
+    ESP_LOGW(TAG, "Setup access point '%s' (%s) up on 192.168.4.1",
+             s_ap_ssid.c_str(), secured ? "WPA2" : "open");
+    return ESP_OK;
+}
+
+// Dropped once the station is back, so the rescue network is only exposed while
+// it is actually needed.
+static void stop_ap()
+{
+    if (!s_ap_active) return;
+
+    ESP_LOGI(TAG, "Station connected, shutting down the setup access point");
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not leave AP mode: %s", esp_err_to_name(err));
+        return;
+    }
+    s_ap_active = false;
+}
 
 static void reconnect_timer_cb(void*)
 {
+    // Started from here rather than the WiFi event handler so the mode change
+    // happens outside the event task. Retries continue regardless.
+    if (s_retry_count >= RETRIES_BEFORE_REPORTING_FAILURE) start_ap();
+
     esp_wifi_connect();
 }
 
@@ -82,6 +184,7 @@ static void event_handler(void* arg, esp_event_base_t base, int32_t id, void* da
         s_reconnect_delay_ms = RECONNECT_BASE_MS;
         xEventGroupClearBits(s_wifi_events, FAIL_BIT);
         xEventGroupSetBits(s_wifi_events, CONNECTED_BIT);
+        stop_ap();
     }
 }
 
@@ -125,7 +228,10 @@ static esp_err_t connect_with(const char* ssid, const char* password)
     strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid), ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy(reinterpret_cast<char*>(wifi_config.sta.password), password, sizeof(wifi_config.sta.password) - 1);
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    // Keep the access point up if it is running: someone may be re-provisioning
+    // through it right now, and dropping it would cut them off mid-request. It
+    // is torn down once the station actually connects.
+    ESP_ERROR_CHECK(esp_wifi_set_mode(s_ap_active ? WIFI_MODE_APSTA : WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
 
     // Cancel any pending backoff attempt so it cannot race these credentials.
@@ -134,7 +240,15 @@ static esp_err_t connect_with(const char* ssid, const char* password)
     if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
 
     xEventGroupClearBits(s_wifi_events, CONNECTED_BIT | FAIL_BIT);
-    ESP_ERROR_CHECK(esp_wifi_start());
+
+    if (!s_wifi_started) {
+        ESP_ERROR_CHECK(esp_wifi_start());
+        s_wifi_started = true;
+    } else {
+        // Already running, so just move the station onto the new credentials.
+        esp_wifi_disconnect();
+        esp_wifi_connect();
+    }
 
     ESP_LOGI(TAG, "Connecting to '%s'...", ssid);
     EventBits_t bits = xEventGroupWaitBits(s_wifi_events, CONNECTED_BIT | FAIL_BIT,
@@ -153,7 +267,10 @@ esp_err_t wifi_init_sta()
 
     esp_err_t err = load_credentials(ssid, sizeof(ssid), pass, sizeof(pass));
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "No WiFi credentials in NVS. Use 'wifi_set <ssid> <password>' to configure.");
+        ESP_LOGW(TAG, "No WiFi credentials in NVS. Use 'wifi_set <ssid> <password>', "
+                      "or join the setup access point and use the web interface.");
+        // Nothing to connect to, so the rescue network is the only way in.
+        start_ap();
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -166,6 +283,45 @@ bool wifi_is_connected()
     return xEventGroupGetBits(s_wifi_events) & CONNECTED_BIT;
 }
 
+bool wifi_has_network()
+{
+    return wifi_is_connected() || s_ap_active;
+}
+
+bool wifi_ap_active()
+{
+    return s_ap_active;
+}
+
+std::string wifi_ap_ssid()
+{
+    // Derived from the MAC, so it can be reported before the access point has
+    // ever run. That matters: the name has to be written down while the device
+    // is still reachable, not discovered once it is not.
+    if (s_ap_ssid.empty()) s_ap_ssid = build_ap_ssid();
+    return s_ap_ssid;
+}
+
+esp_err_t wifi_set_ap_password(const char* password)
+{
+    const size_t len = strlen(password);
+    if (len != 0 && len < AP_MIN_WPA2_PASSWORD) return ESP_ERR_INVALID_ARG;
+    if (len >= 64) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+
+    err = nvs_set_str(handle, "ap_pass", password);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Access point password updated, effective next time it starts");
+    }
+    return err;
+}
+
 esp_err_t wifi_set_credentials(const char* ssid, const char* password)
 {
     nvs_handle_t handle;
@@ -176,9 +332,7 @@ esp_err_t wifi_set_credentials(const char* ssid, const char* password)
     nvs_close(handle);
     ESP_LOGI(TAG, "Credentials saved for '%s'", ssid);
 
-    // Stop existing connection if any, then reconnect
-    if (s_wifi_initialized) {
-        esp_wifi_stop();
-    }
+    // Deliberately not esp_wifi_stop(): that would also drop the access point,
+    // which is the very interface these credentials may have arrived over.
     return connect_with(ssid, password);
 }

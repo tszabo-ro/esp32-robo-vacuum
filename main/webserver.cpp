@@ -55,6 +55,7 @@ esp_err_t WebServer::start()
         {"/api/wifi",     HTTP_POST, handle_post_wifi,    false},
         {"/api/mqtt",     HTTP_POST, handle_post_mqtt,    false},
         {"/api/serial",   HTTP_POST, handle_post_serial,  false},
+        {"/api/ap",       HTTP_POST, handle_post_ap,      false},
         {"/api/command",  HTTP_POST, handle_post_command, false},
         {"/ws",           HTTP_GET,  handle_ws,           true},
     };
@@ -126,6 +127,13 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     if (wifi_connected)
         cJSON_AddStringToObject(wifi, "ssid", reinterpret_cast<const char*>(ap.ssid));
 
+    // Surfaced so the fallback network's name can be noted down while the
+    // device is still reachable, rather than guessed at when it is not.
+    cJSON* apo = cJSON_AddObjectToObject(root, "ap");
+    cJSON_AddBoolToObject(apo, "active", wifi_ap_active());
+    auto ap_ssid = wifi_ap_ssid();
+    if (!ap_ssid.empty()) cJSON_AddStringToObject(apo, "ssid", ap_ssid.c_str());
+
     cJSON* mqtt_obj = cJSON_AddObjectToObject(root, "mqtt");
     cJSON_AddBoolToObject(mqtt_obj, "connected", self->mqtt_.is_connected());
     auto& broker = self->mqtt_.broker_uri();
@@ -195,6 +203,31 @@ esp_err_t WebServer::handle_post_mqtt(httpd_req_t* req)
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, err == ESP_OK ? R"({"ok":true})" : R"({"ok":false,"error":"connection failed"})");
+}
+
+esp_err_t WebServer::handle_post_ap(httpd_req_t* req)
+{
+    auto body = read_body(req);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    auto* password = cJSON_GetObjectItem(root, "password");
+    if (!cJSON_IsString(password)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing password");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = wifi_set_ap_password(password->valuestring);
+    cJSON_Delete(root);
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, err == ESP_OK
+        ? R"({"ok":true})"
+        : R"({"ok":false,"error":"password must be empty or at least 8 characters"})");
 }
 
 esp_err_t WebServer::handle_post_serial(httpd_req_t* req)

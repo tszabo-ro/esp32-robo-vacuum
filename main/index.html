@@ -62,6 +62,7 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 <div class="card">
 <h2>Connectivity</h2>
 <div class="row"><span class="label">WiFi</span><span id="w-status">--</span></div>
+<div class="row" id="ap-row" style="display:none"><span class="label">Setup AP</span><span id="ap-status">--</span></div>
 <div class="row"><span class="label">MQTT</span><span id="m-status">--</span></div>
 <div class="row"><span class="label">Free Heap</span><span id="heap">--</span></div>
 </div>
@@ -103,6 +104,12 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 <div class="field"><label>SSID</label><input id="wifi-ssid"></div>
 <div class="field"><label>Password</label><input id="wifi-pass" type="password"></div>
 <button class="save-btn" onclick="saveWifi()">Save &amp; Connect</button>
+</div>
+<div class="card">
+<h2>Setup Access Point</h2>
+<div class="row"><span class="label">SSID</span><span id="ap-ssid">--</span></div>
+<div class="field"><label>Password (8+ chars, blank for open)</label><input id="ap-pass" type="password"></div>
+<button class="save-btn" onclick="saveAp()">Save</button>
 </div>
 <div class="card">
 <h2>MQTT Broker</h2>
@@ -195,6 +202,15 @@ function saveWifi(){
     .then(r=>r.json()).then(j=>{if(!j.ok)alert(j.error||'Failed')});
 }
 
+function saveAp(){
+  fetch('/api/ap',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({password:document.getElementById('ap-pass').value})})
+    .then(r=>r.json()).then(j=>{
+      if(!j.ok)alert(j.error||'Failed');
+      else{document.getElementById('ap-pass').value='';alert('Saved. Applies next time the AP starts.')}
+    });
+}
+
 function saveMqtt(){
   fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({uri:document.getElementById('mqtt-uri').value})})
@@ -208,6 +224,12 @@ function refreshStatus(){
     const wd=s.wifi.connected;
     document.getElementById('w-status').innerHTML=
       '<span class="status-dot '+(wd?'dot-on':'dot-off')+'"></span>'+(wd?s.wifi.ssid:'Disconnected');
+    if(s.ap){
+      document.getElementById('ap-ssid').textContent=s.ap.ssid||'not started yet';
+      document.getElementById('ap-row').style.display=s.ap.active?'flex':'none';
+      if(s.ap.active) document.getElementById('ap-status').innerHTML=
+        '<span class="status-dot dot-on"></span>'+(s.ap.ssid||'active');
+    }
     const md=s.mqtt.connected;
     document.getElementById('m-status').innerHTML=
       '<span class="status-dot '+(md?'dot-on':'dot-off')+'"></span>'+(md?(s.mqtt.broker||'Connected'):'Disconnected');

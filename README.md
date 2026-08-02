@@ -17,6 +17,29 @@ The robot's debug port is `RX | 3.3V | TX | GND`, wired crossover to the ESP
 (robot RX to ESP TX, robot TX to ESP RX) and it supplies 3.3V to power the ESP.
 The link runs at 115200 baud, matching the serial terminal's default.
 
+## Recovery (no serial access)
+
+Once the board is inside the robot, the network is the only way in, so it is
+built not to need the USB port:
+
+- **Reconnection never gives up.** If the access point disappears, the station
+  retries indefinitely with a backoff capped at one minute, so a router reboot
+  or outage heals by itself.
+- **A fallback access point** comes up when the station cannot connect, or when
+  no credentials are stored at all. Join it and browse to `http://192.168.4.1`
+  to reach the same web interface and re-provision. It shuts down again once the
+  station reconnects, so it is only exposed while it is needed.
+- **The console is reachable from the browser.** The Console tab runs the same
+  commands as the serial console, including `ota_update`, so nothing routine
+  requires opening the robot.
+- **The LED** is the only physical indicator: blinking means the station is
+  connected, dark means it is not.
+
+The access point's SSID is derived from the MAC (for example `neato-b63919`) and
+is shown under Settings while the device is reachable — **note it down before
+sealing the robot**. Its password defaults to `neato-setup`, which is public in
+this repository: set your own under Settings, which stores it in NVS.
+
 ## Reference
 
 [`docs/neato-serial-protocol.md`](docs/neato-serial-protocol.md) is the Neato

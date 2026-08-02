@@ -24,6 +24,7 @@ private:
     static esp_err_t handle_post_wifi(httpd_req_t* req);
     static esp_err_t handle_post_mqtt(httpd_req_t* req);
     static esp_err_t handle_post_serial(httpd_req_t* req);
+    static esp_err_t handle_post_ap(httpd_req_t* req);
     static esp_err_t handle_post_command(httpd_req_t* req);
     static esp_err_t handle_ws(httpd_req_t* req);
 
