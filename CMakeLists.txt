@@ -8,5 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Include ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-# Project definition
-project(neato-mqtt-controller VERSION 0.1.0)
+# Project definition. Deliberately no VERSION: it would pin the version
+# reported by esp_app_get_description(), and ESP-IDF otherwise derives it from
+# `git describe`, so a release tag identifies the running firmware over OTA.
+project(neato-mqtt-controller)

@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -75,8 +76,10 @@ static void network_services_task(void* arg)
 
 extern "C" void app_main()
 {
+    const esp_app_desc_t* app = esp_app_get_description();
+
     ESP_LOGI(TAG, "=== Neato D5 MQTT Controller ===");
-    ESP_LOGI(TAG, "Version: 0.1.0");
+    ESP_LOGI(TAG, "Version: %s", app ? app->version : "unknown");
     ESP_LOGI(TAG, "ESP-IDF Version: %s", esp_get_idf_version());
 
     // Initialize NVS

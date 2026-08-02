@@ -16,6 +16,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and tags, so the version ESP-IDF derives from
+          # `git describe` matches the release tag instead of falling back.
+          fetch-depth: 0
 
       - name: Build firmware
         # Same IDF release as the local Dockerfile, so CI and desktop builds
