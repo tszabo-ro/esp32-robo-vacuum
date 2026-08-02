@@ -17,20 +17,22 @@ ESP32-C3 SuperMini based controller for Neato D5 robot vacuum, enabling Home Ass
 
 ### Prerequisites
 - Docker + Docker Compose (for building)
-- `esptool` + `pyserial` on the host Mac: `pip3 install esptool pyserial`
+- [`uv`](https://docs.astral.sh/uv/) on the host Mac — the Makefile runs `esptool` and
+  `pyserial` through it, so flashing does not depend on a system Python install
 
 ### Common Commands
 
 ```bash
 make build       # compile the project (in Docker)
-make flash       # build + flash + monitor (flashes from host)
-make monitor     # open serial monitor only (from host)
+make flash       # build + flash (flashes from host)
+make monitor     # open serial monitor (from host)
 make shell       # interactive container shell
 ```
 
 Building runs inside Docker using the ESP-IDF toolchain. Flashing and monitoring run directly on the host where the USB device is accessible.
 
-If your device appears on a different port, override it:
+The serial port is auto-detected from the attached `/dev/cu.usbmodem*` or
+`/dev/cu.usbserial*` device. Override it if it picks the wrong one:
 ```bash
 DEVICE=/dev/cu.usbserial-1234 make flash
 ```
