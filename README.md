@@ -50,6 +50,34 @@ idf.py set-target esp32c3
 idf.py menuconfig
 ```
 
+## OTA Updates
+
+Pushing a `v*` tag builds the firmware in CI and publishes it as a GitHub
+Release, so the device can pull it over HTTPS:
+
+```bash
+git tag -a v0.1.2 -m "Some change"
+git push origin v0.1.2
+```
+
+Then, from the serial console (or the web interface's console):
+
+```
+neato> ota_update https://github.com/tszabo-ro/esp32-robo-vacuum/releases/latest/download/neato-mqtt-controller.bin
+```
+
+The `latest/download/` URL always resolves to the newest release, so it does
+not need updating per version. Progress is logged, and the web interface
+mirrors the log to the browser.
+
+The image is written to the inactive slot and the device reboots into it. It is
+only kept if WiFi comes up and the web server starts; otherwise the bootloader
+reverts to the previous image on the next restart, so a broken update cannot
+strand the device somewhere it can no longer be reached.
+
+Certificates are verified against the bundled root CAs, so the firmware host
+needs a publicly trusted certificate — a self-signed local server is rejected.
+
 ## Project Status
 🚧 **In Development** - Setting up build environment
 

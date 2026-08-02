@@ -14,6 +14,7 @@
 
 static constexpr const char* TAG = "ota";
 static constexpr int HTTP_TIMEOUT_MS = 10000;
+static constexpr int HTTP_BUFFER_BYTES = 2048;
 
 esp_err_t OtaUpdater::start(std::string url)
 {
@@ -61,6 +62,10 @@ esp_err_t OtaUpdater::perform()
     http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
     http_cfg.timeout_ms = HTTP_TIMEOUT_MS;
     http_cfg.keep_alive_enable = true;
+    // A GitHub release download redirects to a signed URL roughly 800
+    // characters long, which does not fit the default 512 byte request buffer.
+    http_cfg.buffer_size = HTTP_BUFFER_BYTES;
+    http_cfg.buffer_size_tx = HTTP_BUFFER_BYTES;
 
     esp_https_ota_config_t ota_cfg = {};
     ota_cfg.http_config = &http_cfg;
