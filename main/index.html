@@ -22,6 +22,13 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 .btn-stop{background:#5a2a2a;color:#f44}
 .btn-dock{background:#2a3a5a;color:#4af}
 #log-output{height:50vh;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;background:#0a0a0a;color:#0c0;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all}
+/* Serial output is a single text node rather than per-line divs: UART data
+   arrives in arbitrary chunks, not neat lines. */
+#serial-output{height:46vh;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;background:#0a0a0a;color:#6cf;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all}
+.serial-bar{display:flex;gap:4px;margin-bottom:8px;align-items:center}
+.serial-bar select{padding:8px;background:#1a1a1a;border:1px solid #333;color:#fff;border-radius:4px}
+.serial-bar button{padding:8px 12px;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer}
+.serial-bar .chk{font-size:12px;color:#888;display:flex;align-items:center;gap:4px}
 .cmd-bar{display:flex;gap:4px;margin-top:8px}
 .cmd-bar input{flex:1;padding:8px;background:#1a1a1a;border:1px solid #333;color:#0f0;font-family:monospace;border-radius:4px}
 .cmd-bar button{padding:8px 16px;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer}
@@ -37,6 +44,7 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 <nav>
 <button class="active" onclick="tab('status')">Status</button>
 <button onclick="tab('console')">Console</button>
+<button onclick="tab('serial')">Serial</button>
 <button onclick="tab('settings')">Settings</button>
 </nav>
 
@@ -67,6 +75,28 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 </div>
 </section>
 
+<section id="serial">
+<div class="serial-bar">
+<select id="baud" onchange="setBaud()">
+<option>9600</option><option>19200</option><option>38400</option>
+<option>57600</option><option selected>115200</option><option>230400</option>
+</select>
+<select id="eol" title="Appended to each line sent">
+<option value="\n">LF</option>
+<option value="\r\n">CRLF</option>
+<option value="\r">CR</option>
+<option value="">None</option>
+</select>
+<label class="chk"><input type="checkbox" id="echo" checked>Echo</label>
+<button onclick="document.getElementById('serial-output').textContent=''">Clear</button>
+</div>
+<div id="serial-output"></div>
+<div class="cmd-bar">
+<input id="serial-input" placeholder="Send over UART..." onkeydown="if(event.key==='Enter')sendSerial()">
+<button onclick="sendSerial()">Send</button>
+</div>
+</section>
+
 <section id="settings">
 <div class="card">
 <h2>WiFi</h2>
@@ -84,6 +114,7 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 <script>
 const MAX_LINES=500;
 let ws;
+let baudSynced=false;
 
 function tab(id){
   document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));
@@ -97,6 +128,7 @@ function connect(){
   ws.onmessage=e=>{
     const m=JSON.parse(e.data);
     if(m.type==='log') appendLog(m.data);
+    else if(m.type==='serial') appendSerial(m.data);
     else if(m.type==='console_out') appendLog('[exit: '+m.ret+']');
   };
   ws.onclose=()=>setTimeout(connect,2000);
@@ -119,6 +151,36 @@ function sendCmd(){
   appendLog('> '+c);
   ws.send(JSON.stringify({type:'console_in',cmd:c}));
   input.value='';
+}
+
+const MAX_SERIAL_CHARS=20000;
+
+function appendSerial(text){
+  const el=document.getElementById('serial-output');
+  const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<20;
+  el.textContent+=text;
+  // Trim from the front so a chatty device cannot grow the page without bound.
+  if(el.textContent.length>MAX_SERIAL_CHARS)
+    el.textContent=el.textContent.slice(-MAX_SERIAL_CHARS);
+  if(atBottom) el.scrollTop=el.scrollHeight;
+}
+
+function sendSerial(){
+  const input=document.getElementById('serial-input');
+  const text=input.value;
+  if(!ws||ws.readyState!==1) return;
+  const eol=document.getElementById('eol').value
+    .replace('\\r','\r').replace('\\n','\n');
+  ws.send(JSON.stringify({type:'serial_in',data:text+eol}));
+  // Local echo, since a loopback or a silent device may not echo back.
+  if(document.getElementById('echo').checked) appendSerial(text+'\n');
+  input.value='';
+}
+
+function setBaud(){
+  fetch('/api/serial',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({baud:parseInt(document.getElementById('baud').value,10)})})
+    .then(r=>r.json()).then(j=>{if(!j.ok)alert(j.error||'Failed')});
 }
 
 function cmd(action){
@@ -151,6 +213,8 @@ function refreshStatus(){
       '<span class="status-dot '+(md?'dot-on':'dot-off')+'"></span>'+(md?(s.mqtt.broker||'Connected'):'Disconnected');
     document.getElementById('heap').textContent=s.heap_free+' bytes';
     if(s.mqtt.broker) document.getElementById('mqtt-uri').placeholder=s.mqtt.broker;
+    // Adopt the device's rate once, so polling cannot fight the user's choice.
+    if(s.serial&&!baudSynced){document.getElementById('baud').value=s.serial.baud;baudSynced=true}
   }).catch(()=>{});
 }
 

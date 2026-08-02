@@ -12,6 +12,7 @@
 #include "mqtt.h"
 #include "webserver.h"
 #include "ota.h"
+#include "serial.h"
 
 static constexpr const char* TAG = "neato-mqtt";
 static constexpr gpio_num_t LED_PIN = GPIO_NUM_8;
@@ -98,9 +99,15 @@ extern "C" void app_main()
     // app_main returns once setup is done, so these must outlive its stack.
     static Vacuum vacuum;
     static MqttClient mqtt(vacuum);
-    static WebServer web(vacuum, mqtt);
+    static SerialPort serial;
+    static WebServer web(vacuum, mqtt, serial);
     static OtaUpdater ota;
     static NetworkServices services{mqtt, web};
+
+    // Independent of WiFi, so the UART is live even with no network.
+    if (serial.start() != ESP_OK) {
+        ESP_LOGE(TAG, "Serial port failed to start");
+    }
 
     xTaskCreate(blink_task, "blink", 2048, nullptr, 5, nullptr);
     console_init(ota);

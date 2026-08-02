@@ -7,10 +7,12 @@ idf_component_register(
 	"mqtt.cpp"
 	"webserver.cpp"
 	"ota.cpp"
+	"serial.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         console
         esp_driver_gpio
+        esp_driver_uart
         esp_driver_usb_serial_jtag
         esp_http_server
         esp_wifi

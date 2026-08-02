@@ -21,9 +21,10 @@ extern const char index_html_end[]   asm("_binary_index_html_end");
 vprintf_like_t WebServer::s_original_vprintf = nullptr;
 WebServer* WebServer::s_instance = nullptr;
 
-WebServer::WebServer(Vacuum& vacuum, MqttClient& mqtt)
+WebServer::WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialPort& serial)
     : vacuum_(vacuum)
     , mqtt_(mqtt)
+    , serial_(serial)
     , clients_mutex_(xSemaphoreCreateMutex())
     , log_stream_(xStreamBufferCreate(4096, 1))
 {
@@ -53,6 +54,7 @@ esp_err_t WebServer::start()
         {"/api/status",   HTTP_GET,  handle_get_status,   false},
         {"/api/wifi",     HTTP_POST, handle_post_wifi,    false},
         {"/api/mqtt",     HTTP_POST, handle_post_mqtt,    false},
+        {"/api/serial",   HTTP_POST, handle_post_serial,  false},
         {"/api/command",  HTTP_POST, handle_post_command, false},
         {"/ws",           HTTP_GET,  handle_ws,           true},
     };
@@ -73,6 +75,7 @@ esp_err_t WebServer::start()
     s_instance = this;
     install_log_hook();
     xTaskCreate(log_broadcast_task, "ws_log", 4096, this, 5, &log_task_);
+    xTaskCreate(serial_broadcast_task, "ws_serial", 4096, this, 5, &serial_task_);
 
     ESP_LOGI(TAG, "Web server started on port %d", config.server_port);
     return ESP_OK;
@@ -83,6 +86,10 @@ void WebServer::stop()
     if (log_task_) {
         vTaskDelete(log_task_);
         log_task_ = nullptr;
+    }
+    if (serial_task_) {
+        vTaskDelete(serial_task_);
+        serial_task_ = nullptr;
     }
     if (server_) {
         httpd_stop(server_);
@@ -124,6 +131,9 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     auto& broker = self->mqtt_.broker_uri();
     if (!broker.empty())
         cJSON_AddStringToObject(mqtt_obj, "broker", broker.c_str());
+
+    cJSON* ser = cJSON_AddObjectToObject(root, "serial");
+    cJSON_AddNumberToObject(ser, "baud", self->serial_.baud());
 
     cJSON* vac = cJSON_AddObjectToObject(root, "vacuum");
     cJSON_AddStringToObject(vac, "state", Vacuum::state_to_string(state));
@@ -185,6 +195,31 @@ esp_err_t WebServer::handle_post_mqtt(httpd_req_t* req)
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, err == ESP_OK ? R"({"ok":true})" : R"({"ok":false,"error":"connection failed"})");
+}
+
+esp_err_t WebServer::handle_post_serial(httpd_req_t* req)
+{
+    auto* self = static_cast<WebServer*>(req->user_ctx);
+    auto body = read_body(req);
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    auto* baud = cJSON_GetObjectItem(root, "baud");
+    if (!cJSON_IsNumber(baud)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing baud");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = self->serial_.set_baud(static_cast<uint32_t>(baud->valuedouble));
+    cJSON_Delete(root);
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, err == ESP_OK ? R"({"ok":true})"
+                                                 : R"({"ok":false,"error":"invalid baud rate"})");
 }
 
 esp_err_t WebServer::handle_post_command(httpd_req_t* req)
@@ -249,7 +284,14 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
         cJSON* msg = cJSON_Parse(buf.c_str());
         if (msg) {
             auto* type = cJSON_GetObjectItem(msg, "type");
-            if (cJSON_IsString(type) && std::string_view(type->valuestring) == "console_in") {
+            if (cJSON_IsString(type) && std::string_view(type->valuestring) == "serial_in") {
+                // Sent verbatim: the browser decides the line ending, so the
+                // terminal can talk to devices wanting CR, LF, CRLF or nothing.
+                auto* data = cJSON_GetObjectItem(msg, "data");
+                if (cJSON_IsString(data)) {
+                    self->serial_.write(data->valuestring);
+                }
+            } else if (cJSON_IsString(type) && std::string_view(type->valuestring) == "console_in") {
                 auto* cmd = cJSON_GetObjectItem(msg, "cmd");
                 if (cJSON_IsString(cmd)) {
                     int cmd_ret = 0;
@@ -310,6 +352,51 @@ void WebServer::broadcast_ws(const std::string& msg)
     }
 
     xSemaphoreGive(clients_mutex_);
+}
+
+// --- Serial bridge ---
+
+std::string WebServer::escape_serial(const char* data, size_t len)
+{
+    static constexpr char HEX[] = "0123456789abcdef";
+
+    std::string out;
+    out.reserve(len);
+
+    for (size_t i = 0; i < len; i++) {
+        const auto c = static_cast<unsigned char>(data[i]);
+        if (c == '\n' || c == '\t' || (c >= 0x20 && c < 0x7f)) {
+            out.push_back(static_cast<char>(c));
+        } else if (c == '\r') {
+            // Dropped: the browser appends its own line breaks, and a bare CR
+            // would otherwise show up as an escape in the middle of a line.
+        } else {
+            out += "\\x";
+            out.push_back(HEX[c >> 4]);
+            out.push_back(HEX[c & 0x0f]);
+        }
+    }
+    return out;
+}
+
+void WebServer::serial_broadcast_task(void* arg)
+{
+    auto* self = static_cast<WebServer*>(arg);
+    char buf[256];
+
+    while (true) {
+        // Blocks, so this task costs nothing while the line is idle.
+        size_t received = self->serial_.read(buf, sizeof(buf), 100);
+        if (received == 0) continue;
+
+        cJSON* msg = cJSON_CreateObject();
+        cJSON_AddStringToObject(msg, "type", "serial");
+        cJSON_AddStringToObject(msg, "data", escape_serial(buf, received).c_str());
+        char* json = cJSON_PrintUnformatted(msg);
+        self->broadcast_ws(json);
+        cJSON_free(json);
+        cJSON_Delete(msg);
+    }
 }
 
 // --- Log capture ---
