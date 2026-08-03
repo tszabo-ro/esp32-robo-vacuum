@@ -8,8 +8,10 @@
 #include <string>
 #include <string_view>
 #include "cJSON.h"
+#include "esp_app_desc.h"
 #include "esp_console.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_wifi.h"
 
 static constexpr const char* TAG = "webserver";
@@ -146,6 +148,15 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     cJSON* vac = cJSON_AddObjectToObject(root, "vacuum");
     cJSON_AddStringToObject(vac, "state", Vacuum::state_to_string(state));
     cJSON_AddNumberToObject(vac, "battery", battery);
+
+    // Reported over HTTP because the version is otherwise only visible in the
+    // boot log. Once the robot is closed and updates arrive over the air, this
+    // is the only way to confirm what is actually running.
+    const esp_app_desc_t* app = esp_app_get_description();
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    cJSON* fw = cJSON_AddObjectToObject(root, "firmware");
+    cJSON_AddStringToObject(fw, "version", app ? app->version : "unknown");
+    if (running) cJSON_AddStringToObject(fw, "partition", running->label);
 
     cJSON_AddNumberToObject(root, "heap_free", esp_get_free_heap_size());
 

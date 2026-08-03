@@ -64,6 +64,7 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 <div class="row"><span class="label">WiFi</span><span id="w-status">--</span></div>
 <div class="row" id="ap-row" style="display:none"><span class="label">Setup AP</span><span id="ap-status">--</span></div>
 <div class="row"><span class="label">MQTT</span><span id="m-status">--</span></div>
+<div class="row"><span class="label">Firmware</span><span id="fw">--</span></div>
 <div class="row"><span class="label">Free Heap</span><span id="heap">--</span></div>
 </div>
 </section>
@@ -233,6 +234,8 @@ function refreshStatus(){
     const md=s.mqtt.connected;
     document.getElementById('m-status').innerHTML=
       '<span class="status-dot '+(md?'dot-on':'dot-off')+'"></span>'+(md?(s.mqtt.broker||'Connected'):'Disconnected');
+    if(s.firmware) document.getElementById('fw').textContent=
+      s.firmware.version+(s.firmware.partition?' ('+s.firmware.partition+')':'');
     document.getElementById('heap').textContent=s.heap_free+' bytes';
     if(s.mqtt.broker) document.getElementById('mqtt-uri').placeholder=s.mqtt.broker;
     // Adopt the device's rate once, so polling cannot fight the user's choice.

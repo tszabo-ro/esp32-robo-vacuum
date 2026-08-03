@@ -38,9 +38,18 @@ built not to need the USB port:
 - **The console is reachable from the browser.** The Console tab runs the same
   commands as the serial console, including `ota_update`, so nothing routine
   requires opening the robot.
-- **The LED** is the only physical indicator: blinking at 500ms means the
-  station is connected, dark means it is not, and blinking at 100ms means the
-  factory reset pin is being held.
+- **The LED** is the only physical indicator, and beats once every 10 seconds:
+
+  | Pattern | Meaning |
+  |---|---|
+  | One short flash every 10s | Alive, station connected |
+  | Two short flashes every 10s | Alive, station **not** connected |
+  | Continuous fast blink | Factory reset pin held, counting down |
+  | Nothing at all | Not running |
+
+  The firmware version and active OTA slot are also reported by `/api/status`
+  and shown under Status, so an update can be confirmed without watching the
+  boot log.
 
 ### Joining the fallback access point
 
@@ -72,6 +81,41 @@ three ways:
 A password stored in NVS survives restarts and OTA updates, but not a factory
 reset, which returns it to the built-in default. So if you set your own and
 forget it, GPIO10 is the way back in — that is what the pin is for.
+
+## Power
+
+The controller runs off the robot's battery, so it is tuned for a device that
+idles most of the time rather than for throughput:
+
+- **CPU at 80MHz** instead of 160, roughly halving dynamic power. The visible
+  cost is slower OTA downloads and marginally slower page loads.
+- **WiFi `MAX_MODEM` power save** with a listen interval of 6 beacons (~614ms),
+  so the radio sleeps through most beacons instead of waking for every DTIM.
+  Inbound packets can therefore be delayed by up to about half a second.
+- **The status LED beats once every 10 seconds**, down from being lit roughly
+  half the time.
+- WiFi sleep code is kept in IRAM, which shortens each wake-up.
+
+Two things deliberately left alone:
+
+- **Automatic light sleep** (`CONFIG_PM_ENABLE` with tickless idle) is *not*
+  enabled. The UART driver stays installed to serve the robot link, and bytes
+  arriving while the CPU is in light sleep are lost unless UART wake-up is
+  configured. Losing the robot's replies to save power is the wrong trade for
+  this device. It can be revisited by making the serial terminal release the
+  UART when idle.
+- **TX power** is left at the default. Range matters once the board is inside
+  the robot's shell, and signal that is too weak costs more in retransmissions
+  than it saves.
+
+**The red power LED cannot be turned off in software.** On this board it is
+wired directly across the 3V3 rail with no GPIO involved, so removing it means
+desoldering it or cutting its trace. At a few milliamps it draws more than the
+heartbeat LED now does, so it is worth doing if every milliamp counts.
+
+If the station's RSSI is marginal once the robot is closed up, reduce
+`STA_LISTEN_INTERVAL` in `main/wifi.cpp`, or drop back to `WIFI_PS_MIN_MODEM`:
+aggressive power save on a weak signal costs reliability.
 
 ## Reference
 

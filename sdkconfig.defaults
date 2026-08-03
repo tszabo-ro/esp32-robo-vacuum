@@ -13,6 +13,17 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 # Console over USB-Serial/JTAG (ESP32-C3 SuperMini has no separate UART-USB chip)
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
+# Power. The controller runs off the robot's battery, so it is tuned for a
+# device that idles most of the time rather than for throughput.
+#
+# 80MHz roughly halves dynamic CPU power. WiFi, TLS and the UART all still work;
+# the visible cost is slower OTA downloads and marginally slower page loads.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y
+
+# Keeps the WiFi sleep path in IRAM so each wake-up is shorter, which is where
+# most of the radio's idle power goes.
+CONFIG_ESP_WIFI_SLP_IRAM_OPT=y
+
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y

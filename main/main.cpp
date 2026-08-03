@@ -18,35 +18,57 @@
 static constexpr const char* TAG = "neato-mqtt";
 static constexpr gpio_num_t LED_PIN = GPIO_NUM_8;
 
+// A heartbeat rather than a continuous blink: the controller runs off the
+// robot's battery, and the LED was previously lit around half the time.
+static constexpr uint32_t HEARTBEAT_PERIOD_MS = 10000;
+static constexpr uint32_t HEARTBEAT_FLASH_MS = 40;
+static constexpr uint32_t HEARTBEAT_GAP_MS = 200;
+static constexpr uint32_t LED_CHECK_MS = 100;
+
 // Services that cannot start until the device is on the network.
 struct NetworkServices {
     MqttClient& mqtt;
     WebServer& web;
 };
 
-static void blink_task(void* arg)
+static void led_flash(uint32_t on_ms)
+{
+    gpio_set_level(LED_PIN, 0); // active-low
+    vTaskDelay(pdMS_TO_TICKS(on_ms));
+    gpio_set_level(LED_PIN, 1);
+}
+
+static void led_task(void* arg)
 {
     gpio_reset_pin(LED_PIN);
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_PIN, 1); // off (active-low)
 
-    bool led_on = false;
     while (true) {
-        uint32_t delay_ms = 500;
-
         if (FactoryReset::pending()) {
             // Fast blink while the reset pin is held. With the robot closed this
             // is the only confirmation that the hold has been registered.
-            led_on = !led_on;
-            delay_ms = 100;
-        } else if (wifi_is_connected()) {
-            led_on = !led_on;
-        } else {
-            led_on = false; // off when disconnected
+            led_flash(LED_CHECK_MS);
+            vTaskDelay(pdMS_TO_TICKS(LED_CHECK_MS));
+            continue;
         }
 
-        gpio_set_level(LED_PIN, led_on ? 0 : 1);
-        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        // One short flash every ten seconds means alive and connected; a second
+        // flash means the station is down. Holding the period the same either
+        // way keeps the fault indication essentially free, while the duty cycle
+        // drops from around 50% to well under one percent.
+        led_flash(HEARTBEAT_FLASH_MS);
+        if (!wifi_is_connected()) {
+            vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_GAP_MS));
+            led_flash(HEARTBEAT_FLASH_MS);
+        }
+
+        // Waited in slices so a held reset pin is acknowledged promptly rather
+        // than up to ten seconds later.
+        for (uint32_t waited = 0; waited < HEARTBEAT_PERIOD_MS; waited += LED_CHECK_MS) {
+            if (FactoryReset::pending()) break;
+            vTaskDelay(pdMS_TO_TICKS(LED_CHECK_MS));
+        }
     }
 }
 
@@ -133,7 +155,7 @@ extern "C" void app_main()
         ESP_LOGE(TAG, "Serial port failed to start");
     }
 
-    xTaskCreate(blink_task, "blink", 2048, nullptr, 5, nullptr);
+    xTaskCreate(led_task, "led", 2048, nullptr, 5, nullptr);
     console_init(ota);
     vacuum.start_simulation();
 

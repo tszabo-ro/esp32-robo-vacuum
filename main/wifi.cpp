@@ -22,6 +22,11 @@ static constexpr const char* NVS_NAMESPACE = "wifi_creds";
 // it could only be recovered by physically reflashing it.
 static constexpr int RETRIES_BEFORE_REPORTING_FAILURE = 5;
 
+// Beacon intervals (~102ms each) slept through under MAX_MODEM power save.
+// Higher saves more radio power and adds inbound latency; too high and access
+// points give up holding buffered frames, so this stays moderate.
+static constexpr uint16_t STA_LISTEN_INTERVAL = 6;
+
 // Reconnect backoff. The previous code retried immediately and only five times,
 // which a router reboot outlasts every time, leaving the device offline until
 // someone power-cycled it.
@@ -250,6 +255,12 @@ static esp_err_t ensure_wifi_initialized()
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    // MAX_MODEM sleeps through whole listen intervals rather than waking for
+    // every DTIM, which suits a mostly idle device. Note that the radio cannot
+    // sleep at all while the fallback access point is up, so power save only
+    // applies in normal station operation.
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MAX_MODEM));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, nullptr));
 
@@ -264,6 +275,7 @@ static esp_err_t connect_with(const char* ssid, const char* password)
     wifi_config_t wifi_config = {};
     strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid), ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy(reinterpret_cast<char*>(wifi_config.sta.password), password, sizeof(wifi_config.sta.password) - 1);
+    wifi_config.sta.listen_interval = STA_LISTEN_INTERVAL;
 
     // Keep the access point up if it is running: someone may be re-provisioning
     // through it right now, and dropping it would cut them off mid-request. It
