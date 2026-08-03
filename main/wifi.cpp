@@ -35,6 +35,13 @@ static constexpr uint8_t AP_CHANNEL = 1;
 static constexpr uint8_t AP_MAX_CONNECTIONS = 2;
 static constexpr size_t AP_MIN_WPA2_PASSWORD = 8;
 
+// Overrides ESP-IDF's 192.168.4.1 default. Note that 192.168.1.0/24 is a very
+// common home range: if the station ever joins a router using it, both
+// interfaces end up on the same subnet and routing becomes ambiguous, so move
+// this if that happens.
+static constexpr const char* AP_IP = "192.168.1.1";
+static constexpr const char* AP_NETMASK = "255.255.255.0";
+
 // Placeholder, so the rescue network is not open by default. This value is
 // public in the repository: set your own from the web interface, which stores
 // it in NVS and takes precedence over this.
@@ -85,6 +92,31 @@ static esp_err_t start_ap()
     ESP_ERROR_CHECK(ensure_wifi_initialized());
     if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
 
+    // The DHCP server has to be stopped to re-address the interface, and then
+    // hands out leases on the new subnet.
+    //
+    // Deliberately best-effort rather than ESP_ERROR_CHECK: this is the recovery
+    // path, and aborting here would turn a cosmetic addressing problem into an
+    // unreachable device. An access point on the default address is still a way
+    // in; a panicking one is not.
+    esp_netif_ip_info_t ip = {};
+    ip.ip.addr = esp_ip4addr_aton(AP_IP);
+    ip.gw.addr = esp_ip4addr_aton(AP_IP);
+    ip.netmask.addr = esp_ip4addr_aton(AP_NETMASK);
+
+    esp_err_t ip_err = esp_netif_dhcps_stop(s_ap_netif);
+    if (ip_err == ESP_OK || ip_err == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        ip_err = esp_netif_set_ip_info(s_ap_netif, &ip);
+        if (ip_err == ESP_OK) {
+            ip_err = esp_netif_dhcps_start(s_ap_netif);
+            if (ip_err == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) ip_err = ESP_OK;
+        }
+    }
+    if (ip_err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not set the access point address, using the default: %s",
+                 esp_err_to_name(ip_err));
+    }
+
     s_ap_ssid = build_ap_ssid();
 
     char password[65] = {};
@@ -111,8 +143,13 @@ static esp_err_t start_ap()
     }
 
     s_ap_active = true;
-    ESP_LOGW(TAG, "Setup access point '%s' (%s) up on 192.168.4.1",
-             s_ap_ssid.c_str(), secured ? "WPA2" : "open");
+
+    // Report what the interface actually ended up with, not what was intended,
+    // so the log can be trusted when the addressing above did not take.
+    esp_netif_ip_info_t actual = {};
+    esp_netif_get_ip_info(s_ap_netif, &actual);
+    ESP_LOGW(TAG, "Setup access point '%s' (%s) up on " IPSTR,
+             s_ap_ssid.c_str(), secured ? "WPA2" : "open", IP2STR(&actual.ip));
     return ESP_OK;
 }
 

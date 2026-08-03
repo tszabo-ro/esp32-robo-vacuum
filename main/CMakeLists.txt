@@ -8,6 +8,7 @@ idf_component_register(
 	"webserver.cpp"
 	"ota.cpp"
 	"serial.cpp"
+	"factory_reset.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         console

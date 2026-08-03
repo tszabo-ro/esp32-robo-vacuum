@@ -26,14 +26,21 @@ built not to need the USB port:
   retries indefinitely with a backoff capped at one minute, so a router reboot
   or outage heals by itself.
 - **A fallback access point** comes up when the station cannot connect, or when
-  no credentials are stored at all. Join it and browse to `http://192.168.4.1`
+  no credentials are stored at all. Join it and browse to `http://192.168.1.1`
   to reach the same web interface and re-provision. It shuts down again once the
   station reconnects, so it is only exposed while it is needed.
+- **A factory reset pin** on **GPIO10**: hold it to ground for 5 seconds to
+  erase all stored configuration and restart, which brings the access point
+  back up. The pin has an internal pull-up, so leaving it unconnected is safe,
+  and the LED blinks rapidly while the hold is counting down — release before
+  5 seconds to cancel. This is the way back if even the access point cannot be
+  reached, for instance because its password was set and then forgotten.
 - **The console is reachable from the browser.** The Console tab runs the same
   commands as the serial console, including `ota_update`, so nothing routine
   requires opening the robot.
-- **The LED** is the only physical indicator: blinking means the station is
-  connected, dark means it is not.
+- **The LED** is the only physical indicator: blinking at 500ms means the
+  station is connected, dark means it is not, and blinking at 100ms means the
+  factory reset pin is being held.
 
 The access point's SSID is derived from the MAC (for example `neato-b63919`) and
 is shown under Settings while the device is reachable — **note it down before

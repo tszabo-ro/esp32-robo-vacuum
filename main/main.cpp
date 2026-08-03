@@ -13,6 +13,7 @@
 #include "webserver.h"
 #include "ota.h"
 #include "serial.h"
+#include "factory_reset.h"
 
 static constexpr const char* TAG = "neato-mqtt";
 static constexpr gpio_num_t LED_PIN = GPIO_NUM_8;
@@ -31,14 +32,21 @@ static void blink_task(void* arg)
 
     bool led_on = false;
     while (true) {
-        if (wifi_is_connected()) {
+        uint32_t delay_ms = 500;
+
+        if (FactoryReset::pending()) {
+            // Fast blink while the reset pin is held. With the robot closed this
+            // is the only confirmation that the hold has been registered.
             led_on = !led_on;
-            gpio_set_level(LED_PIN, led_on ? 0 : 1);
+            delay_ms = 100;
+        } else if (wifi_is_connected()) {
+            led_on = !led_on;
         } else {
-            gpio_set_level(LED_PIN, 1); // off when disconnected
-            led_on = false;
+            led_on = false; // off when disconnected
         }
-        vTaskDelay(pdMS_TO_TICKS(500));
+
+        gpio_set_level(LED_PIN, led_on ? 0 : 1);
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 
@@ -106,6 +114,11 @@ extern "C" void app_main()
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
 
     OtaUpdater::log_running_partition();
+
+    // Armed first, so a wedged configuration can still be cleared even if
+    // something later in startup misbehaves.
+    static FactoryReset factory;
+    factory.start();
 
     // app_main returns once setup is done, so these must outlive its stack.
     static Vacuum vacuum;
