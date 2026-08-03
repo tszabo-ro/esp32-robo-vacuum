@@ -42,10 +42,36 @@ built not to need the USB port:
   station is connected, dark means it is not, and blinking at 100ms means the
   factory reset pin is being held.
 
-The access point's SSID is derived from the MAC (for example `neato-b63919`) and
-is shown under Settings while the device is reachable — **note it down before
-sealing the robot**. Its password defaults to `neato-setup`, which is public in
-this repository: set your own under Settings, which stores it in NVS.
+### Joining the fallback access point
+
+```
+SSID:     neato-<last 3 bytes of the MAC>     e.g. neato-b63919
+Password: neato-setup
+Address:  http://192.168.1.1
+```
+
+The SSID is derived from the MAC and is shown under Settings while the device is
+still reachable — **note it and any password you set down before sealing the
+robot**.
+
+The network is WPA2 rather than open deliberately. The interface it serves can
+drive the vacuum, rewrite the WiFi credentials and run `ota_update`, so an open
+fallback would hand all of that to anyone in range. The default above is public
+in this repository, though, so it only deters a passer-by. Change it in one of
+three ways:
+
+- **Settings → Setup Access Point** in the web interface. Stored in NVS, takes
+  precedence over the built-in default, and applies the next time the access
+  point starts. This is the one worth doing before sealing the robot.
+- **Submit a blank password** there to make the network open. Anything shorter
+  than 8 characters is unusable for WPA2, so it falls back to an open network
+  and says so in the log.
+- **Change `DEFAULT_AP_PASSWORD`** in `main/wifi.cpp` to ship a different
+  built-in default.
+
+A password stored in NVS survives restarts and OTA updates, but not a factory
+reset, which returns it to the built-in default. So if you set your own and
+forget it, GPIO10 is the way back in — that is what the pin is for.
 
 ## Reference
 
