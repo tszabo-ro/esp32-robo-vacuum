@@ -89,9 +89,11 @@ idles most of the time rather than for throughput:
 
 - **CPU at 80MHz** instead of 160, roughly halving dynamic power. The visible
   cost is slower OTA downloads and marginally slower page loads.
-- **WiFi `MAX_MODEM` power save** with a listen interval of 6 beacons (~614ms),
-  so the radio sleeps through most beacons instead of waking for every DTIM.
-  Inbound packets can therefore be delayed by up to about half a second.
+- **WiFi power save left at the default** (`WIFI_PS_MIN_MODEM`), which already
+  sleeps between DTIM beacons. `MAX_MODEM` with a longer listen interval was
+  tried and reverted: sleeping through beacons costs latency and reliability on
+  a signal the robot's shell already attenuates, and the retransmissions give
+  the saving back.
 - **The status LED beats once every 10 seconds**, down from being lit roughly
   half the time.
 - WiFi sleep code is kept in IRAM, which shortens each wake-up.
@@ -113,9 +115,8 @@ wired directly across the 3V3 rail with no GPIO involved, so removing it means
 desoldering it or cutting its trace. At a few milliamps it draws more than the
 heartbeat LED now does, so it is worth doing if every milliamp counts.
 
-If the station's RSSI is marginal once the robot is closed up, reduce
-`STA_LISTEN_INTERVAL` in `main/wifi.cpp`, or drop back to `WIFI_PS_MIN_MODEM`:
-aggressive power save on a weak signal costs reliability.
+Radio power save is the tempting knob here and the one to be careful with: on a
+weak signal it costs more in retransmissions than it saves.
 
 ## Reference
 
