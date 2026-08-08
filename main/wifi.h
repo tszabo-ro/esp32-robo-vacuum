@@ -16,6 +16,23 @@ esp_err_t wifi_init_sta();
 // Save WiFi credentials to NVS and (re)connect.
 esp_err_t wifi_set_credentials(const char* ssid, const char* password);
 
+// Coarse network state, in the order the status LED reports it. Exists because
+// a sealed device with no network has no other way to say what is wrong: the
+// difference between "cannot associate" and "associated but no DHCP lease"
+// points at completely different causes.
+enum class WifiState {
+    Connected,      // station associated and holding an IP address
+    Associating,    // credentials stored, not associated (trying, or failing)
+    Associated,     // associated but no IP address yet, so DHCP is the problem
+    AccessPoint,    // fallback access point serving, join it to re-provision
+    NoCredentials,  // nothing stored, so the station has nothing to try
+};
+
+WifiState wifi_state();
+
+// Signal strength of the current association in dBm, or 0 if not associated.
+int wifi_rssi();
+
 // Returns true if the station is connected and has an IP address.
 bool wifi_is_connected();
 

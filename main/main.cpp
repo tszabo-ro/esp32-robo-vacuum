@@ -20,10 +20,21 @@ static constexpr gpio_num_t LED_PIN = GPIO_NUM_8;
 
 // A heartbeat rather than a continuous blink: the controller runs off the
 // robot's battery, and the LED was previously lit around half the time.
+//
+// The pattern is also the only diagnostic channel that survives a network
+// failure, so it carries as much state as can still be counted by eye: a first
+// group of flashes for the network state, then a longer pause, then a second
+// group for signal strength when there is an association to measure.
 static constexpr uint32_t HEARTBEAT_PERIOD_MS = 10000;
 static constexpr uint32_t HEARTBEAT_FLASH_MS = 40;
-static constexpr uint32_t HEARTBEAT_GAP_MS = 200;
+static constexpr uint32_t HEARTBEAT_GAP_MS = 220;
+static constexpr uint32_t HEARTBEAT_GROUP_GAP_MS = 1200;
 static constexpr uint32_t LED_CHECK_MS = 100;
+
+// Signal buckets. Chosen around the -64dBm seen on the bench: anything at or
+// below FAIR is where association starts becoming unreliable.
+static constexpr int RSSI_GOOD_DBM = -65;
+static constexpr int RSSI_FAIR_DBM = -75;
 
 // Services that cannot start until the device is on the network.
 struct NetworkServices {
@@ -36,6 +47,37 @@ static void led_flash(uint32_t on_ms)
     gpio_set_level(LED_PIN, 0); // active-low
     vTaskDelay(pdMS_TO_TICKS(on_ms));
     gpio_set_level(LED_PIN, 1);
+}
+
+// A countable burst: flashes separated by a gap shorter than the gap between
+// groups, so two groups do not read as one longer count.
+static void led_flash_group(int count)
+{
+    for (int i = 0; i < count; i++) {
+        led_flash(HEARTBEAT_FLASH_MS);
+        if (i + 1 < count) vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_GAP_MS));
+    }
+}
+
+static int flashes_for_state(WifiState state)
+{
+    switch (state) {
+    case WifiState::Connected:     return 1;
+    case WifiState::Associating:   return 2;
+    case WifiState::Associated:    return 3;
+    case WifiState::AccessPoint:   return 4;
+    case WifiState::NoCredentials: return 5;
+    }
+    return 2;
+}
+
+// 0 means there is nothing to report, so the second group is skipped entirely.
+static int flashes_for_signal(int rssi_dbm)
+{
+    if (rssi_dbm == 0) return 0;
+    if (rssi_dbm >= RSSI_GOOD_DBM) return 3;
+    if (rssi_dbm >= RSSI_FAIR_DBM) return 2;
+    return 1;
 }
 
 static void led_task(void* arg)
@@ -53,14 +95,16 @@ static void led_task(void* arg)
             continue;
         }
 
-        // One short flash every ten seconds means alive and connected; a second
-        // flash means the station is down. Holding the period the same either
-        // way keeps the fault indication essentially free, while the duty cycle
-        // drops from around 50% to well under one percent.
-        led_flash(HEARTBEAT_FLASH_MS);
-        if (!wifi_is_connected()) {
-            vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_GAP_MS));
-            led_flash(HEARTBEAT_FLASH_MS);
+        const WifiState state = wifi_state();
+        led_flash_group(flashes_for_state(state));
+
+        // Signal strength is the one thing that cannot be read at all without a
+        // cable, and it is exactly what a marginal antenna looks like, so it
+        // gets its own group whenever there is an association to measure.
+        const int signal = flashes_for_signal(wifi_rssi());
+        if (signal > 0) {
+            vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_GROUP_GAP_MS));
+            led_flash_group(signal);
         }
 
         // Waited in slices so a held reset pin is acknowledged promptly rather

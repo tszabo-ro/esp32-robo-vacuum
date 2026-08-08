@@ -38,18 +38,35 @@ built not to need the USB port:
 - **The console is reachable from the browser.** The Console tab runs the same
   commands as the serial console, including `ota_update`, so nothing routine
   requires opening the robot.
-- **The LED** is the only physical indicator, and beats once every 10 seconds:
+- **The LED is the only diagnostic that survives a network failure**, so it
+  carries as much state as can be counted by eye. Every 10 seconds it flashes a
+  **state group**, and when there is an association to measure, a longer pause
+  followed by a **signal group**:
 
-  | Pattern | Meaning |
+  | State group | Meaning |
   |---|---|
-  | One short flash every 10s | Alive, station connected |
-  | Two short flashes every 10s | Alive, station **not** connected |
+  | 1 flash | Connected, holding an IP address |
+  | 2 flashes | Credentials stored but not associated — cannot reach the AP |
+  | 3 flashes | Associated but no IP — DHCP is the problem, not the radio |
+  | 4 flashes | Fallback access point up, join it to re-provision |
+  | 5 flashes | No credentials stored |
   | Continuous fast blink | Factory reset pin held, counting down |
   | Nothing at all | Not running |
 
+  | Signal group | RSSI |
+  |---|---|
+  | 1 flash | Weak, below −75dBm |
+  | 2 flashes | Fair, −75 to −65dBm |
+  | 3 flashes | Good, above −65dBm |
+
+  So `1 ......... 3` is connected with a good signal, and a bare `2` means it
+  never associated. The distinction between 2 and 3 flashes is the one that
+  cannot be diagnosed any other way once the robot is closed: the radio failing
+  and DHCP failing look identical from outside.
+
   The firmware version and active OTA slot are also reported by `/api/status`
   and shown under Status, so an update can be confirmed without watching the
-  boot log.
+  boot log — when there is a network to ask over.
 
 ### Joining the fallback access point
 

@@ -50,6 +50,10 @@ static constexpr const char* DEFAULT_AP_PASSWORD = "neato-setup";
 static EventGroupHandle_t s_wifi_events;
 static constexpr int CONNECTED_BIT = BIT0;
 static constexpr int FAIL_BIT = BIT1;
+// Tracked separately from CONNECTED_BIT so association and DHCP can be told
+// apart: associating fine but never getting a lease is a different fault.
+static constexpr int ASSOCIATED_BIT = BIT2;
+static bool s_have_credentials = false;
 static int s_retry_count = 0;
 static bool s_wifi_initialized = false;
 static esp_timer_handle_t s_reconnect_timer = nullptr;
@@ -217,7 +221,12 @@ static void event_handler(void* arg, esp_event_base_t base, int32_t id, void* da
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        // Associated, but not usable until DHCP produces an address.
+        ESP_LOGI(TAG, "Associated, waiting for an address");
+        xEventGroupSetBits(s_wifi_events, ASSOCIATED_BIT);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupClearBits(s_wifi_events, ASSOCIATED_BIT);
         // This bit was never cleared here, so wifi_is_connected() kept
         // reporting a live link after the connection had dropped.
         xEventGroupClearBits(s_wifi_events, CONNECTED_BIT);
@@ -281,6 +290,7 @@ static esp_err_t ensure_wifi_initialized()
 static esp_err_t connect_with(const char* ssid, const char* password)
 {
     ESP_ERROR_CHECK(ensure_wifi_initialized());
+    s_have_credentials = true;
 
     wifi_config_t wifi_config = {};
     strncpy(reinterpret_cast<char*>(wifi_config.sta.ssid), ssid, sizeof(wifi_config.sta.ssid) - 1);
@@ -353,6 +363,25 @@ esp_err_t wifi_start_ap()
     // which is a poor way to test the one path that has to work.
     s_ap_forced = true;
     return start_ap();
+}
+
+WifiState wifi_state()
+{
+    if (wifi_is_connected()) return WifiState::Connected;
+    if (s_ap_active) return WifiState::AccessPoint;
+
+    if (s_wifi_initialized && (xEventGroupGetBits(s_wifi_events) & ASSOCIATED_BIT)) {
+        return WifiState::Associated;
+    }
+    if (!s_have_credentials) return WifiState::NoCredentials;
+    return WifiState::Associating;
+}
+
+int wifi_rssi()
+{
+    wifi_ap_record_t ap = {};
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
+    return ap.rssi;
 }
 
 bool wifi_ap_active()
