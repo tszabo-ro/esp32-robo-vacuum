@@ -72,6 +72,19 @@ static void led_task(void* arg)
     }
 }
 
+// Starting the console involves probing the terminal for escape-sequence
+// support, which is a blocking read on stdin. With a USB host attached that
+// completes; with nothing plugged in it stalls, and running it inline stalled
+// app_main with it - so wifi_init_sta() never ran, and the device sat with no
+// station, no fallback access point, and no way in. On its own task it cannot
+// gate the network: a headless device has to get online whether or not anyone
+// is plugged into it.
+static void console_task(void* arg)
+{
+    console_init(*static_cast<OtaUpdater*>(arg));
+    vTaskDelete(nullptr);
+}
+
 // Brings up the web server and MQTT client once WiFi is up. Credentials can
 // arrive well after boot (via the console), so this waits instead of giving up.
 static void network_services_task(void* arg)
@@ -156,7 +169,7 @@ extern "C" void app_main()
     }
 
     xTaskCreate(led_task, "led", 2048, nullptr, 5, nullptr);
-    console_init(ota);
+    xTaskCreate(console_task, "console", 4096, &ota, 5, nullptr);
     vacuum.start_simulation();
 
     // Started before wifi_init_sta() so the services come up as soon as the
