@@ -56,6 +56,9 @@ static esp_timer_handle_t s_reconnect_timer = nullptr;
 static uint32_t s_reconnect_delay_ms = RECONNECT_BASE_MS;
 static bool s_wifi_started = false;
 static bool s_ap_active = false;
+// Set when the access point was requested deliberately rather than as a
+// fallback, so a station reconnect does not silently take it away again.
+static bool s_ap_forced = false;
 static esp_netif_t* s_ap_netif = nullptr;
 static std::string s_ap_ssid;
 
@@ -166,6 +169,10 @@ static esp_err_t start_ap()
 static void stop_ap()
 {
     if (!s_ap_active) return;
+    if (s_ap_forced) {
+        ESP_LOGI(TAG, "Leaving the access point up, it was started on request");
+        return;
+    }
 
     ESP_LOGI(TAG, "Station connected, shutting down the setup access point");
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
@@ -337,6 +344,15 @@ bool wifi_is_connected()
 bool wifi_has_network()
 {
     return wifi_is_connected() || s_ap_active;
+}
+
+esp_err_t wifi_start_ap()
+{
+    // Sticky, so it survives the station reconnecting. Exists mainly because the
+    // fallback is otherwise only reachable by breaking the stored credentials,
+    // which is a poor way to test the one path that has to work.
+    s_ap_forced = true;
+    return start_ap();
 }
 
 bool wifi_ap_active()

@@ -48,6 +48,17 @@ static int cmd_wifi_status(int, char**)
     return 0;
 }
 
+static int cmd_wifi_ap(int, char**)
+{
+    esp_err_t err = wifi_start_ap();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not start the access point: %s", esp_err_to_name(err));
+        return 1;
+    }
+    ESP_LOGI(TAG, "Access point '%s' requested", wifi_ap_ssid().c_str());
+    return 0;
+}
+
 static int cmd_ota_update(int argc, char** argv)
 {
     int nerrors = arg_parse(argc, argv, (void**)&ota_update_args);
@@ -103,6 +114,17 @@ void console_init(OtaUpdater& ota)
         .context = nullptr,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_status_cmd));
+
+    const esp_console_cmd_t wifi_ap_cmd = {
+        .command = "wifi_ap",
+        .help = "Bring up the fallback access point and keep it up",
+        .hint = nullptr,
+        .func = &cmd_wifi_ap,
+        .argtable = nullptr,
+        .func_w_context = nullptr,
+        .context = nullptr,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_ap_cmd));
 
     ota_update_args.url = arg_str1(nullptr, nullptr, "<url>", "HTTPS URL of the firmware image");
     ota_update_args.end = arg_end(1);

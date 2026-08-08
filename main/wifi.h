@@ -27,6 +27,11 @@ bool wifi_has_network();
 // the station cannot connect, and stopped once it can.
 bool wifi_ap_active();
 
+// Brings the fallback access point up on request and keeps it up, even if the
+// station reconnects. Otherwise the only way to reach it is to break the stored
+// credentials, which is a poor way to exercise a recovery path.
+esp_err_t wifi_start_ap();
+
 // SSID of the fallback access point. Derived from the MAC, so it is known
 // before the access point has ever started.
 std::string wifi_ap_ssid();
