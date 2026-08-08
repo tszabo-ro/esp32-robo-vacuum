@@ -92,8 +92,41 @@ static esp_err_t start_ap()
     ESP_ERROR_CHECK(ensure_wifi_initialized());
     if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
 
-    // The DHCP server has to be stopped to re-address the interface, and then
-    // hands out leases on the new subnet.
+    s_ap_ssid = build_ap_ssid();
+
+    char password[65] = {};
+    load_ap_password(password, sizeof(password));
+    const bool secured = strlen(password) >= AP_MIN_WPA2_PASSWORD;
+    if (!secured) {
+        ESP_LOGW(TAG, "AP password shorter than %d characters, starting an open network",
+                 static_cast<int>(AP_MIN_WPA2_PASSWORD));
+    }
+
+    wifi_config_t cfg = {};
+    strncpy(reinterpret_cast<char*>(cfg.ap.ssid), s_ap_ssid.c_str(), sizeof(cfg.ap.ssid) - 1);
+    cfg.ap.ssid_len = s_ap_ssid.size();
+    strncpy(reinterpret_cast<char*>(cfg.ap.password), password, sizeof(cfg.ap.password) - 1);
+    cfg.ap.channel = AP_CHANNEL;
+    cfg.ap.max_connection = AP_MAX_CONNECTIONS;
+    cfg.ap.authmode = secured ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+
+    // Order matters, and getting it wrong is silent. Switching the mode while
+    // the radio is running brings the AP interface up immediately, using the
+    // config it already holds - which is empty. Setting the SSID afterwards does
+    // not restart the beacon, so it advertises a blank network: every call
+    // returns OK and nothing is visible to scan. Stop the radio first so the
+    // mode and the config are both in place before the interface comes up.
+    if (s_wifi_started) {
+        ESP_ERROR_CHECK(esp_wifi_stop());
+        s_wifi_started = false;
+    }
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    s_wifi_started = true;
+
+    // Addressed after starting, because stopping the radio takes the AP netif
+    // and its DHCP server down with it.
     //
     // Deliberately best-effort rather than ESP_ERROR_CHECK: this is the recovery
     // path, and aborting here would turn a cosmetic addressing problem into an
@@ -115,31 +148,6 @@ static esp_err_t start_ap()
     if (ip_err != ESP_OK) {
         ESP_LOGW(TAG, "Could not set the access point address, using the default: %s",
                  esp_err_to_name(ip_err));
-    }
-
-    s_ap_ssid = build_ap_ssid();
-
-    char password[65] = {};
-    load_ap_password(password, sizeof(password));
-    const bool secured = strlen(password) >= AP_MIN_WPA2_PASSWORD;
-    if (!secured) {
-        ESP_LOGW(TAG, "AP password shorter than %d characters, starting an open network",
-                 static_cast<int>(AP_MIN_WPA2_PASSWORD));
-    }
-
-    wifi_config_t cfg = {};
-    strncpy(reinterpret_cast<char*>(cfg.ap.ssid), s_ap_ssid.c_str(), sizeof(cfg.ap.ssid) - 1);
-    cfg.ap.ssid_len = s_ap_ssid.size();
-    strncpy(reinterpret_cast<char*>(cfg.ap.password), password, sizeof(cfg.ap.password) - 1);
-    cfg.ap.channel = AP_CHANNEL;
-    cfg.ap.max_connection = AP_MAX_CONNECTIONS;
-    cfg.ap.authmode = secured ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &cfg));
-    if (!s_wifi_started) {
-        ESP_ERROR_CHECK(esp_wifi_start());
-        s_wifi_started = true;
     }
 
     s_ap_active = true;
