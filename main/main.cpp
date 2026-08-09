@@ -242,12 +242,23 @@ extern "C" void app_main()
         ESP_LOGE(TAG, "Serial port failed to start");
     }
 
-    xTaskCreate(led_task, "led", 2048, nullptr, 5, nullptr);
-    xTaskCreate(console_task, "console", 4096, &ota, 5, nullptr);
+    // Checked, like every other xTaskCreate in this tree. A task that silently
+    // fails to start here is the worst case of the lot: net_svc not coming up
+    // means no web server and no MQTT, for good, on a device whose whole
+    // recovery story is the web server.
+    if (xTaskCreate(led_task, "led", 2048, nullptr, 5, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Could not start the status LED task");
+    }
+    if (xTaskCreate(console_task, "console", 4096, &ota, 5, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Could not start the console task");
+    }
     vacuum.start_simulation();
 
     // Started before wifi_init_sta() so the services come up as soon as the
     // connection lands; wifi_init_sta() itself blocks until connect or timeout.
-    xTaskCreate(network_services_task, "net_svc", 4096, &services, 5, nullptr);
+    if (xTaskCreate(network_services_task, "net_svc", 4096, &services, 5, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Could not start the network services task; "
+                      "the web interface and MQTT will not come up");
+    }
     wifi_init_sta();
 }

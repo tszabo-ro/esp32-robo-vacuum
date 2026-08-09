@@ -6,34 +6,50 @@
 
 static constexpr const char* TAG = "vacuum";
 
+namespace {
+
+// Tolerates a mutex that could not be created, the way every other module here
+// does. Taking a null handle is an assert inside FreeRTOS, which would turn a
+// failed allocation at construction into a panic much later and somewhere else.
+class Lock {
+public:
+    explicit Lock(SemaphoreHandle_t m) : m_(m) { if (m_) xSemaphoreTake(m_, portMAX_DELAY); }
+    ~Lock() { if (m_) xSemaphoreGive(m_); }
+    Lock(const Lock&) = delete;
+    Lock& operator=(const Lock&) = delete;
+
+private:
+    SemaphoreHandle_t m_;
+};
+
+}  // namespace
+
 Vacuum::Vacuum()
     : mutex_(xSemaphoreCreateMutex())
 {
+    if (!mutex_) ESP_LOGE(TAG, "Could not create the state mutex");
 }
 
 void Vacuum::start()
 {
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    Lock lock(mutex_);
     ESP_LOGI(TAG, "Starting cleaning");
     state_ = VacuumState::CLEANING;
-    xSemaphoreGive(mutex_);
 }
 
 void Vacuum::stop()
 {
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    Lock lock(mutex_);
     ESP_LOGI(TAG, "Stopping");
     state_ = VacuumState::IDLE;
-    xSemaphoreGive(mutex_);
 }
 
 void Vacuum::return_to_base()
 {
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    Lock lock(mutex_);
     ESP_LOGI(TAG, "Returning to base");
     state_ = VacuumState::RETURNING;
     returning_ticks_ = 2;
-    xSemaphoreGive(mutex_);
 }
 
 bool Vacuum::command(std::string_view name)
@@ -46,7 +62,7 @@ bool Vacuum::command(std::string_view name)
 
 void Vacuum::tick()
 {
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    Lock lock(mutex_);
 
     switch (state_) {
     case VacuumState::CLEANING:
@@ -72,13 +88,13 @@ void Vacuum::tick()
     case VacuumState::IDLE:
         break;
     }
-
-    xSemaphoreGive(mutex_);
 }
 
 void Vacuum::start_simulation()
 {
-    xTaskCreate(simulation_task, "vacuum_sim", 2048, this, 5, nullptr);
+    if (xTaskCreate(simulation_task, "vacuum_sim", 2048, this, 5, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Could not start the simulation task; state will never advance");
+    }
 }
 
 void Vacuum::simulation_task(void* arg)
@@ -93,9 +109,8 @@ void Vacuum::simulation_task(void* arg)
 
 VacuumStatus Vacuum::status()
 {
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    Lock lock(mutex_);
     VacuumStatus s = {state_, battery_};
-    xSemaphoreGive(mutex_);
     return s;
 }
 
