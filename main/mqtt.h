@@ -30,11 +30,6 @@ public:
     // string that had just been freed underneath it.
     std::string broker_uri() const;
 
-    // Replaces "user:password@" with "***@". esp-mqtt accepts credentials
-    // embedded in the URI, which is the natural thing for someone to type - and
-    // this value is logged, and every log line goes to every connected browser.
-    static std::string redact_uri(std::string_view uri);
-
     static constexpr const char* VACUUM_ID = "sim_vacuum";
 
 private:

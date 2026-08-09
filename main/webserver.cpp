@@ -1,5 +1,6 @@
 #include "webserver.h"
 #include "auth.h"
+#include "text_util.h"
 #include "wifi.h"
 
 #include <algorithm>
@@ -330,13 +331,8 @@ bool WebServer::origin_ok(httpd_req_t* req, bool required)
     std::string host;
     if (!read_header(req, "Host", host)) return false;
 
-    // Origin is "scheme://authority"; Host is the authority alone. Only plain
-    // HTTP is served, so anything else did not come from this device's page.
-    std::string_view view(origin);
-    constexpr std::string_view prefix = "http://";
-    if (view.substr(0, prefix.size()) != prefix) return false;
-
-    return view.substr(prefix.size()) == host;
+    // Origin is "scheme://authority"; Host is the authority alone.
+    return text::origin_matches_host(origin, host);
 }
 
 std::string WebServer::session_token(httpd_req_t* req, bool& from_bearer)
@@ -444,12 +440,7 @@ bool WebServer::content_type_is_json(httpd_req_t* req)
 {
     std::string type;
     if (!read_header(req, "Content-Type", type)) return false;
-
-    // "application/json" optionally followed by parameters, e.g. a charset.
-    std::string_view view(type);
-    constexpr std::string_view json = "application/json";
-    if (view.substr(0, json.size()) != json) return false;
-    return view.size() == json.size() || view[json.size()] == ';';
+    return text::is_json_content_type(type);
 }
 
 bool WebServer::allow_json(httpd_req_t* req)
@@ -735,7 +726,7 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     // task, and a reference into it would be freed mid-response.
     const std::string broker = self->mqtt_.broker_uri();
     if (!broker.empty())
-        cJSON_AddStringToObject(mqtt_obj, "broker", MqttClient::redact_uri(broker).c_str());
+        cJSON_AddStringToObject(mqtt_obj, "broker", text::redact_uri(broker).c_str());
 
     cJSON* ser = cJSON_AddObjectToObject(root, "serial");
     cJSON_AddNumberToObject(ser, "baud", self->serial_.baud());
@@ -1078,29 +1069,6 @@ void WebServer::broadcast_typed(const char* type, const char* data)
 
 // --- Serial bridge ---
 
-std::string WebServer::escape_serial(const char* data, size_t len)
-{
-    static constexpr char HEX[] = "0123456789abcdef";
-
-    std::string out;
-    out.reserve(len);
-
-    for (size_t i = 0; i < len; i++) {
-        const auto c = static_cast<unsigned char>(data[i]);
-        if (c == '\n' || c == '\t' || (c >= 0x20 && c < 0x7f)) {
-            out.push_back(static_cast<char>(c));
-        } else if (c == '\r') {
-            // Dropped: the browser appends its own line breaks, and a bare CR
-            // would otherwise show up as an escape in the middle of a line.
-        } else {
-            out += "\\x";
-            out.push_back(HEX[c >> 4]);
-            out.push_back(HEX[c & 0x0f]);
-        }
-    }
-    return out;
-}
-
 void WebServer::serial_broadcast_task(void* arg)
 {
     auto* self = static_cast<WebServer*>(arg);
@@ -1119,7 +1087,7 @@ void WebServer::serial_broadcast_task(void* arg)
         size_t received = self->serial_.read(buf, sizeof(buf), 100);
         if (received == 0) continue;
 
-        self->broadcast_typed("serial", escape_serial(buf, received).c_str());
+        self->broadcast_typed("serial", text::escape_serial(buf, received).c_str());
     }
 }
 

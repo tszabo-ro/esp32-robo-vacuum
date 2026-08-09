@@ -5,6 +5,8 @@ idf_component_register(
 	"auth.cpp"
 	"captive_dns.cpp"
 	"console.cpp"
+	"dns_message.cpp"
+	"text_util.cpp"
 	"vacuum.cpp"
 	"mqtt.cpp"
 	"webserver.cpp"

@@ -1,4 +1,5 @@
 #include "auth.h"
+#include "text_util.h"
 
 #include <cstring>
 #include "esp_log.h"
@@ -58,15 +59,6 @@ public:
     Lock(const Lock&) = delete;
     Lock& operator=(const Lock&) = delete;
 };
-
-// Compares without an early exit, so timing does not reveal how much of the
-// input matched.
-bool constant_time_equal(const uint8_t* a, const uint8_t* b, size_t len)
-{
-    uint8_t diff = 0;
-    for (size_t i = 0; i < len; i++) diff = static_cast<uint8_t>(diff | (a[i] ^ b[i]));
-    return diff == 0;
-}
 
 esp_err_t derive(std::string_view password, const uint8_t* salt, uint8_t* out)
 {
@@ -188,7 +180,7 @@ bool Auth::verify_password(std::string_view password)
     uint8_t actual[DIGEST_BYTES];
     if (derive(password, salt, actual) != ESP_OK) return false;
 
-    return constant_time_equal(actual, expected, DIGEST_BYTES);
+    return text::constant_time_equal(actual, expected, DIGEST_BYTES);
 }
 
 bool Auth::throttled()
@@ -245,9 +237,9 @@ bool Auth::validate_session(std::string_view token)
             s = Session{};
             continue;
         }
-        if (constant_time_equal(reinterpret_cast<const uint8_t*>(s.token),
-                                reinterpret_cast<const uint8_t*>(token.data()),
-                                TOKEN_CHARS)) {
+        if (text::constant_time_equal(reinterpret_cast<const uint8_t*>(s.token),
+                                      reinterpret_cast<const uint8_t*>(token.data()),
+                                      TOKEN_CHARS)) {
             s.expires_us = now + SESSION_TTL_US;
             return true;
         }
@@ -262,9 +254,9 @@ void Auth::destroy_session(std::string_view token)
     Lock lock;
     for (auto& s : s_sessions) {
         if (s.token[0] == '\0') continue;
-        if (constant_time_equal(reinterpret_cast<const uint8_t*>(s.token),
-                                reinterpret_cast<const uint8_t*>(token.data()),
-                                TOKEN_CHARS)) {
+        if (text::constant_time_equal(reinterpret_cast<const uint8_t*>(s.token),
+                                      reinterpret_cast<const uint8_t*>(token.data()),
+                                      TOKEN_CHARS)) {
             s = Session{};
             return;
         }

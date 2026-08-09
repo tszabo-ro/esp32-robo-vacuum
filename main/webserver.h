@@ -111,11 +111,6 @@ private:
     // and replying twice on one request corrupts the connection.
     static std::optional<std::string> read_body(httpd_req_t* req);
 
-    // Renders bytes from the UART as something a JSON string can carry: raw
-    // input may contain NULs or invalid UTF-8, which would truncate or corrupt
-    // the frame. Non-printables other than newline and tab become \xNN.
-    static std::string escape_serial(const char* data, size_t len);
-
     // Bodies are configuration blobs, not uploads. The cap is applied before
     // anything is allocated, because Content-Length is attacker-controlled and
     // an allocation failure here is a panic reboot on the only way in.

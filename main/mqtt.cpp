@@ -1,4 +1,5 @@
 #include "mqtt.h"
+#include "text_util.h"
 
 #include <string>
 #include <string_view>
@@ -55,23 +56,6 @@ MqttClient::MqttClient(Vacuum& vacuum)
     if (!mutex_) ESP_LOGE(TAG, "Could not create the client mutex");
 }
 
-std::string MqttClient::redact_uri(std::string_view uri)
-{
-    const size_t scheme_end = uri.find("//");
-    if (scheme_end == std::string_view::npos) return std::string(uri);
-
-    const size_t authority = scheme_end + 2;
-    const size_t at = uri.find('@', authority);
-    if (at == std::string_view::npos) return std::string(uri);
-
-    // The userinfo component is everything between "//" and "@". A '/' before
-    // the '@' means the '@' is in the path, not in the authority.
-    const size_t slash = uri.find('/', authority);
-    if (slash != std::string_view::npos && slash < at) return std::string(uri);
-
-    return std::string(uri.substr(0, authority)) + "***@" + std::string(uri.substr(at + 1));
-}
-
 static esp_err_t load_broker_uri(std::string& uri)
 {
     nvs_handle_t handle;
@@ -115,7 +99,7 @@ esp_err_t MqttClient::init()
     // bug and is not one.
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&cfg);
     if (!client) {
-        ESP_LOGE(TAG, "Failed to create MQTT client for '%s'", redact_uri(uri).c_str());
+        ESP_LOGE(TAG, "Failed to create MQTT client for '%s'", text::redact_uri(uri).c_str());
         return ESP_FAIL;
     }
 
@@ -134,7 +118,7 @@ esp_err_t MqttClient::init()
 
     // Redacted: esp-mqtt reads credentials out of the URI, and every log line
     // this device produces is broadcast to each connected browser.
-    ESP_LOGI(TAG, "MQTT client initialized, broker: %s", redact_uri(uri).c_str());
+    ESP_LOGI(TAG, "MQTT client initialized, broker: %s", text::redact_uri(uri).c_str());
     return ESP_OK;
 }
 
@@ -181,7 +165,7 @@ esp_err_t MqttClient::set_broker(const std::string& uri)
         ESP_LOGE(TAG, "Could not save the broker URI: %s", esp_err_to_name(err));
         return err;
     }
-    ESP_LOGI(TAG, "Broker URI saved: %s", redact_uri(uri).c_str());
+    ESP_LOGI(TAG, "Broker URI saved: %s", text::redact_uri(uri).c_str());
 
     // The lock is held across the teardown, not just across nulling the
     // pointer. Nulling first only narrows the window: the publisher can already
