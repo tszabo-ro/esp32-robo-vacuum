@@ -8,6 +8,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -142,9 +143,11 @@ WebServer::WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialPort& serial, OtaUp
     , ota_(ota)
     , clients_mutex_(xSemaphoreCreateMutex())
     , log_stream_(xStreamBufferCreate(4096, 1))
+    , ws_tx_queue_(xQueueCreate(WS_TX_QUEUE_DEPTH, sizeof(std::string*)))
 {
     if (!clients_mutex_) ESP_LOGE(TAG, "Could not create the client mutex");
     if (!log_stream_) ESP_LOGE(TAG, "Could not create the log stream buffer");
+    if (!ws_tx_queue_) ESP_LOGE(TAG, "Could not create the WebSocket send queue");
 }
 
 esp_err_t WebServer::start()
@@ -230,33 +233,26 @@ esp_err_t WebServer::start()
     }
 
     s_instance = this;
+
+    // Started before the producers, so nothing can be queued with nothing to
+    // drain it.
+    if (xTaskCreate(ws_tx_task, "ws_tx", 4096, this, 5, &ws_tx_task_) != pdPASS) {
+        ws_tx_task_ = nullptr;
+        ESP_LOGE(TAG, "Could not start the WebSocket sender; live streams will not run");
+    }
+
     install_log_hook();
-    xTaskCreate(log_broadcast_task, "ws_log", 4096, this, 5, &log_task_);
-    xTaskCreate(serial_broadcast_task, "ws_serial", 4096, this, 5, &serial_task_);
+    if (xTaskCreate(log_broadcast_task, "ws_log", 4096, this, 5, &log_task_) != pdPASS) {
+        log_task_ = nullptr;
+        ESP_LOGE(TAG, "Could not start the log reader");
+    }
+    if (xTaskCreate(serial_broadcast_task, "ws_serial", 4096, this, 5, &serial_task_) != pdPASS) {
+        serial_task_ = nullptr;
+        ESP_LOGE(TAG, "Could not start the serial reader");
+    }
 
     ESP_LOGI(TAG, "Web server started on port %d", config.server_port);
     return ESP_OK;
-}
-
-void WebServer::stop()
-{
-    if (log_task_) {
-        vTaskDelete(log_task_);
-        log_task_ = nullptr;
-    }
-    if (serial_task_) {
-        vTaskDelete(serial_task_);
-        serial_task_ = nullptr;
-    }
-    if (server_) {
-        httpd_stop(server_);
-        server_ = nullptr;
-    }
-    if (s_original_vprintf) {
-        esp_log_set_vprintf(s_original_vprintf);
-        s_original_vprintf = nullptr;
-    }
-    s_instance = nullptr;
 }
 
 // Runs when a session ends, however it ends. Relying on a CLOSE frame instead
@@ -356,22 +352,28 @@ std::string WebServer::session_token(httpd_req_t* req, bool& from_bearer)
     return {};
 }
 
-bool WebServer::session_valid(httpd_req_t* req, bool origin_required)
+std::string WebServer::authorized_token(httpd_req_t* req, bool origin_required)
 {
-    if (!Auth::configured()) return false;
+    if (!Auth::configured()) return {};
 
     bool from_bearer = false;
-    const std::string token = session_token(req, from_bearer);
-    if (token.empty()) return false;
+    std::string token = session_token(req, from_bearer);
+    if (token.empty()) return {};
 
     // A cookie is attached by the browser to any request, including one a
     // hostile page made and including a WebSocket upgrade. So a cookie only
     // counts when the request also says it came from this device's own page. A
     // bearer token needs no such check: a cross-origin form cannot set that
     // header, and a fetch that tries is stopped by the preflight.
-    if (!from_bearer && !origin_ok(req, origin_required)) return false;
+    if (!from_bearer && !origin_ok(req, origin_required)) return {};
 
-    return Auth::validate_session(token);
+    if (!Auth::validate_session(token)) return {};
+    return token;
+}
+
+bool WebServer::session_valid(httpd_req_t* req, bool origin_required)
+{
+    return !authorized_token(req, origin_required).empty();
 }
 
 // The guards answer with false and never with an esp_err_t.
@@ -747,6 +749,10 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
 
     cJSON_AddNumberToObject(root, "heap_free", esp_get_free_heap_size());
 
+    // Live frames are dropped rather than blocking the UART reader or the log
+    // hook, so without this the loss is completely invisible.
+    cJSON_AddNumberToObject(root, "ws_dropped", self->ws_dropped_.load());
+
     char* json = cJSON_PrintUnformatted(root);
     esp_err_t ret = send_json(req, json ? json : R"({})");
     cJSON_free(json);
@@ -933,14 +939,17 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
         // anything and no frame from it is ever read.
         // Origin demanded here: a browser always sends it on an upgrade, and
         // this is the request the same-origin policy does nothing about.
-        if (!session_valid(req, true)) {
+        const std::string token = authorized_token(req, true);
+        if (token.empty()) {
             ESP_LOGW(TAG, "Rejected an unauthenticated WebSocket upgrade");
             return ESP_FAIL;
         }
 
         int fd = httpd_req_to_sockfd(req);
         ESP_LOGI(TAG, "WebSocket client connected: fd=%d", fd);
-        self->add_ws_client(fd);
+        // Remembered, not just checked. Everything after this point in the
+        // socket's life is measured against this token.
+        self->add_ws_client(fd, token);
         return ESP_OK;
     }
 
@@ -965,6 +974,25 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
     }
 
     if (frame.len == 0) return ESP_OK;
+
+    // Revalidated here, before a byte of the payload is read.
+    //
+    // Authorising the upgrade is a decision made once, and this socket outlives
+    // it: without this check a client that signed out, or whose session expired,
+    // or whose password was changed underneath it, still had a working terminal
+    // onto the robot's UART for as long as it kept the socket open. Extending
+    // the session is right here, unlike in the fanout - a frame is something the
+    // person at the other end actually did.
+    {
+        const int fd = httpd_req_to_sockfd(req);
+        std::string token;
+        if (!self->ws_client_token(fd, token) || !Auth::validate_session(token)) {
+            ESP_LOGW(TAG, "WebSocket session no longer valid, closing fd=%d", fd);
+            self->remove_ws_client(fd);
+            return ESP_FAIL;  // closes the session
+        }
+    }
+
     if (frame.len > MAX_WS_FRAME_BYTES) {
         ESP_LOGW(TAG, "Dropping a %u byte WebSocket frame", static_cast<unsigned>(frame.len));
         return ESP_FAIL;  // closes the session
@@ -999,7 +1027,7 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
     return ESP_OK;
 }
 
-void WebServer::add_ws_client(int fd)
+void WebServer::add_ws_client(int fd, const std::string& token)
 {
     Lock lock(clients_mutex_);
 
@@ -1007,47 +1035,44 @@ void WebServer::add_ws_client(int fd)
     // often. Without this a reconnect on a recycled number appended a second
     // copy that the liveness check could never remove, because the descriptor
     // genuinely is a live socket - and every log line then went out twice.
-    if (std::find(ws_clients_.begin(), ws_clients_.end(), fd) != ws_clients_.end()) return;
+    for (auto& c : ws_clients_) {
+        if (c.fd != fd) continue;
+        // Same number, new handshake: re-stamp it with the session that just
+        // authorized it rather than leaving the previous holder's token on a
+        // socket that now belongs to someone else.
+        snprintf(c.token, sizeof(c.token), "%s", token.c_str());
+        return;
+    }
 
     if (ws_clients_.size() >= MAX_WS_CLIENTS) {
         ESP_LOGW(TAG, "Too many WebSocket clients, refusing fd=%d", fd);
         return;
     }
-    ws_clients_.push_back(fd);
+
+    WsClient client;
+    client.fd = fd;
+    snprintf(client.token, sizeof(client.token), "%s", token.c_str());
+    ws_clients_.push_back(client);
 }
 
 void WebServer::remove_ws_client(int fd)
 {
     Lock lock(clients_mutex_);
     ws_clients_.erase(
-        std::remove(ws_clients_.begin(), ws_clients_.end(), fd),
+        std::remove_if(ws_clients_.begin(), ws_clients_.end(),
+                       [fd](const WsClient& c) { return c.fd == fd; }),
         ws_clients_.end());
 }
 
-void WebServer::broadcast_ws(const std::string& msg)
+bool WebServer::ws_client_token(int fd, std::string& out)
 {
-    // The descriptor list is copied under the lock and the sends happen outside
-    // it. Sending is a blocking write: a client that completes the handshake
-    // and then never reads fills its window, and holding the lock across that
-    // stalled the other broadcast task and stopped the UART being drained.
-    std::vector<int> fds;
-    {
-        Lock lock(clients_mutex_);
-        fds = ws_clients_;
+    Lock lock(clients_mutex_);
+    for (const auto& c : ws_clients_) {
+        if (c.fd != fd) continue;
+        out = c.token;
+        return true;
     }
-    if (fds.empty() || !server_) return;
-
-    httpd_ws_frame_t frame = {};
-    frame.type = HTTPD_WS_TYPE_TEXT;
-    frame.payload = reinterpret_cast<uint8_t*>(const_cast<char*>(msg.data()));
-    frame.len = msg.size();
-
-    for (int fd : fds) {
-        if (httpd_ws_get_fd_info(server_, fd) != HTTPD_WS_CLIENT_WEBSOCKET
-            || httpd_ws_send_frame_async(server_, fd, &frame) != ESP_OK) {
-            remove_ws_client(fd);
-        }
-    }
+    return false;
 }
 
 void WebServer::broadcast_typed(const char* type, const char* data)
@@ -1061,10 +1086,93 @@ void WebServer::broadcast_typed(const char* type, const char* data)
     // runs in after something else has eaten it - and the old code passed that
     // null straight into a std::string.
     if (json) {
-        broadcast_ws(json);
+        enqueue_ws(json);
         cJSON_free(json);
     }
     cJSON_Delete(msg);
+}
+
+void WebServer::enqueue_ws(const char* json)
+{
+    if (!ws_tx_queue_) return;
+
+    // Nothing listening is the common case on a headless robot, and it is worth
+    // not allocating for.
+    {
+        Lock lock(clients_mutex_);
+        if (ws_clients_.empty()) return;
+    }
+
+    auto* copy = new (std::nothrow) std::string(json);
+    if (!copy) return;
+
+    // Dropped rather than blocked, and this is the whole reason the queue
+    // exists. The producers are draining the UART and the log hook; making
+    // either of them wait on a browser that stopped reading would overrun the
+    // UART's receive buffer and stall every task that logs.
+    if (xQueueSend(ws_tx_queue_, &copy, 0) != pdTRUE) {
+        delete copy;
+        ws_dropped_++;
+    }
+}
+
+// The one task allowed to call the server's WebSocket API from outside the HTTP
+// server's own task.
+//
+// The log reader and the serial reader used to each call it directly. ESP-IDF's
+// HTTP server API is not thread-safe, and a send is not one atomic write: two
+// tasks sending at once interleave a header from one frame with the payload of
+// another, and the browser drops a connection it can no longer parse. Funnelling
+// every send through here removes the concurrency rather than narrowing it.
+void WebServer::ws_tx_task(void* arg)
+{
+    auto* self = static_cast<WebServer*>(arg);
+
+    while (true) {
+        std::string* msg = nullptr;
+        if (xQueueReceive(self->ws_tx_queue_, &msg, portMAX_DELAY) != pdTRUE) continue;
+        if (!msg) continue;
+
+        self->deliver_ws(*msg);
+        delete msg;
+    }
+}
+
+void WebServer::deliver_ws(const std::string& msg)
+{
+    // The client list is copied under the lock and the sends happen outside it,
+    // so a stalled socket cannot block the HTTP server's task from registering
+    // or removing a client.
+    std::vector<WsClient> clients;
+    {
+        Lock lock(clients_mutex_);
+        clients = ws_clients_;
+    }
+    if (clients.empty() || !server_) return;
+
+    httpd_ws_frame_t frame = {};
+    frame.type = HTTPD_WS_TYPE_TEXT;
+    frame.payload = reinterpret_cast<uint8_t*>(const_cast<char*>(msg.data()));
+    frame.len = msg.size();
+
+    for (const auto& client : clients) {
+        // Checked without extending: a socket that merely stays open must not
+        // renew its own session, or the lifetime would mean nothing to exactly
+        // the client that never goes away.
+        if (!Auth::session_alive(client.token)) {
+            ESP_LOGI(TAG, "WebSocket session ended, closing fd=%d", client.fd);
+            remove_ws_client(client.fd);
+            // The documented way to close a session from another task; doing it
+            // with close() would leave the server's own bookkeeping behind.
+            httpd_sess_trigger_close(server_, client.fd);
+            continue;
+        }
+
+        if (httpd_ws_get_fd_info(server_, client.fd) != HTTPD_WS_CLIENT_WEBSOCKET
+            || httpd_ws_send_frame_async(server_, client.fd, &frame) != ESP_OK) {
+            remove_ws_client(client.fd);
+        }
+    }
 }
 
 // --- Serial bridge ---
