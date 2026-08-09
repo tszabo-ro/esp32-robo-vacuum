@@ -27,6 +27,12 @@ public:
     esp_err_t set_baud(uint32_t baud);
     uint32_t baud() const;
 
+    // False when the driver failed to install. read() cannot block in that
+    // state, so a reader that assumes it does spins at full speed instead of
+    // idling - and the status page would otherwise report a baud rate for a
+    // UART that is not running.
+    bool started() const;
+
     // UART0's default pins, which are the ones silkscreened TX/RX on the
     // SuperMini. They are free because the console runs over USB-Serial-JTAG.
     static constexpr uart_port_t PORT = UART_NUM_1;

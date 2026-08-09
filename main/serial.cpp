@@ -67,11 +67,22 @@ esp_err_t SerialPort::set_baud(uint32_t baud)
     }
 
     baud_ = baud;
-    ESP_LOGI(TAG, "Baud rate set to %" PRIu32, baud);
+    // Says which of the two happened. It used to report the rate as set either
+    // way, so a UART that never opened still showed a changed line rate.
+    if (started_) {
+        ESP_LOGI(TAG, "Baud rate set to %" PRIu32, baud);
+    } else {
+        ESP_LOGW(TAG, "Baud rate recorded as %" PRIu32 ", but the port is not open", baud);
+    }
     return ESP_OK;
 }
 
 uint32_t SerialPort::baud() const
 {
     return baud_;
+}
+
+bool SerialPort::started() const
+{
+    return started_;
 }
