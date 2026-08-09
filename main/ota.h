@@ -25,9 +25,6 @@ public:
     // reported in the log. Thread-safe.
     esp_err_t start(std::string url);
 
-    // True while a transfer is in flight. Thread-safe.
-    bool in_progress() const;
-
     // Confirms the running image is healthy, cancelling the pending rollback.
     // Does nothing unless this boot is a new image awaiting verification, so
     // it is safe to call on every boot.

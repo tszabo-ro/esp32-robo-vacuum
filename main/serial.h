@@ -33,8 +33,9 @@ public:
     // UART that is not running.
     bool started() const;
 
-    // UART0's default pins, which are the ones silkscreened TX/RX on the
-    // SuperMini. They are free because the console runs over USB-Serial-JTAG.
+    // UART1 driving the pins silkscreened TX/RX on the SuperMini, which are
+    // UART0's defaults. They are free for this because the ESP's own console
+    // runs over USB-Serial-JTAG rather than over UART0.
     static constexpr uart_port_t PORT = UART_NUM_1;
     static constexpr gpio_num_t TX_PIN = GPIO_NUM_21;
     static constexpr gpio_num_t RX_PIN = GPIO_NUM_20;

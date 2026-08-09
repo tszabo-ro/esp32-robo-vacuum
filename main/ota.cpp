@@ -32,11 +32,6 @@ esp_err_t OtaUpdater::start(std::string url)
     return ESP_OK;
 }
 
-bool OtaUpdater::in_progress() const
-{
-    return in_progress_;
-}
-
 void OtaUpdater::update_task(void* arg)
 {
     auto* self = static_cast<OtaUpdater*>(arg);

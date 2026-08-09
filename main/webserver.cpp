@@ -489,6 +489,10 @@ esp_err_t WebServer::handle_index(httpd_req_t* req)
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
         "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
     httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    // no-cache rather than no-store: the shell may be reused, but it has to be
+    // revalidated first, or an update installed over the air leaves the browser
+    // driving the new firmware through the previous build's page.
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, index_html_start, index_html_end - index_html_start);
 }
