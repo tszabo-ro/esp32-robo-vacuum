@@ -4,8 +4,10 @@
 #include "driver/gpio.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
+#include "auth.h"
 #include "wifi.h"
 #include "console.h"
 #include "vacuum.h"
@@ -144,7 +146,20 @@ static void network_services_task(void* arg)
 
     esp_err_t web_err = services->web.start();
     if (web_err != ESP_OK) {
-        ESP_LOGE(TAG, "Web server failed to start");
+        ESP_LOGE(TAG, "Web server failed to start: %s", esp_err_to_name(web_err));
+
+        // Rollback only happens on a restart, and nothing else here restarts.
+        // Without this the device sits indefinitely on a freshly installed
+        // image that cannot serve its own management interface - which is
+        // exactly the case the rollback exists for, with nothing to trigger it.
+        const esp_partition_t* running = esp_ota_get_running_partition();
+        esp_ota_img_states_t state;
+        if (running && esp_ota_get_state_partition(running, &state) == ESP_OK
+            && state == ESP_OTA_IMG_PENDING_VERIFY) {
+            ESP_LOGE(TAG, "This image is unverified and cannot serve; restarting to roll back");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
+        }
     }
 
     // The rest needs a real network, not just the rescue access point. Waiting
@@ -156,8 +171,16 @@ static void network_services_task(void* arg)
 
     // init() warns on its own when no broker is stored yet; the broker can
     // still be set later from the web UI, which restarts the client.
+    //
+    // Not ESP_ERROR_CHECK: esp_mqtt_client_start can fail at runtime for a URI
+    // that parsed fine, and aborting here would panic before the image below is
+    // marked valid - rolling back a perfectly good update because a broker was
+    // unreachable, which is the outcome the comment below says is being avoided.
     if (services->mqtt.init() == ESP_OK) {
-        ESP_ERROR_CHECK(services->mqtt.start());
+        esp_err_t mqtt_err = services->mqtt.start();
+        if (mqtt_err != ESP_OK) {
+            ESP_LOGE(TAG, "MQTT client failed to start: %s", esp_err_to_name(mqtt_err));
+        }
     }
 
     // Health check for a freshly installed image: the station is on the network
@@ -189,8 +212,15 @@ extern "C" void app_main()
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "System initialized successfully");
-    ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
+    // Says what it actually means. It used to read "System initialized
+    // successfully" here, before the reset pin, the serial port, the LED, the
+    // console, the simulation and WiFi - so a boot log read to find where
+    // startup died pointed well past the failure.
+    ESP_LOGI(TAG, "Storage ready, free heap: %lu bytes", esp_get_free_heap_size());
+
+    // Loaded before anything can serve a request, so the web server never has
+    // to guess whether a password exists.
+    Auth::init();
 
     OtaUpdater::log_running_partition();
 
@@ -203,8 +233,8 @@ extern "C" void app_main()
     static Vacuum vacuum;
     static MqttClient mqtt(vacuum);
     static SerialPort serial;
-    static WebServer web(vacuum, mqtt, serial);
     static OtaUpdater ota;
+    static WebServer web(vacuum, mqtt, serial, ota);
     static NetworkServices services{mqtt, web};
 
     // Independent of WiFi, so the UART is live even with no network.

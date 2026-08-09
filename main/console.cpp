@@ -2,6 +2,7 @@
 #include "ota.h"
 #include "wifi.h"
 
+#include <string>
 #include "esp_console.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -33,17 +34,49 @@ static int cmd_wifi_set(int argc, char** argv)
 
     esp_err_t err = wifi_set_credentials(wifi_set_args.ssid->sval[0],
                                          wifi_set_args.password->sval[0]);
-    return (err == ESP_OK) ? 0 : 1;
+    if (err == ESP_ERR_INVALID_ARG) {
+        ESP_LOGE(TAG, "SSID must be 1-%d characters and the password at most %d",
+                 static_cast<int>(WIFI_MAX_SSID), static_cast<int>(WIFI_MAX_PASSWORD));
+        return 1;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not save credentials: %s", esp_err_to_name(err));
+        return 1;
+    }
+
+    // Saved, not connected: the attempt runs on its own task now, so this
+    // returns before there is an outcome. 'wifi_status' reports it.
+    ESP_LOGI(TAG, "Credentials saved, connecting in the background");
+    return 0;
 }
 
 static int cmd_wifi_status(int, char**)
 {
+    // Reports the address, because with the robot closed this console is the
+    // one place it can be asked for. It used to print only the SSID and RSSI,
+    // and to call a bare association "Connected" - erasing exactly the
+    // associated-without-a-lease case the state machine and the LED exist to
+    // tell apart, and leaving the address readable only in a boot log line that
+    // has long since scrolled away.
+    ESP_LOGI(TAG, "State: %s", wifi_state_to_string(wifi_state()));
+
     wifi_ap_record_t ap;
-    esp_err_t err = esp_wifi_sta_get_ap_info(&ap);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Connected to '%s', RSSI: %d", ap.ssid, ap.rssi);
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        ESP_LOGI(TAG, "Associated with '%s', RSSI: %d dBm", ap.ssid, ap.rssi);
+    }
+
+    const std::string sta = wifi_sta_address();
+    if (!sta.empty()) {
+        ESP_LOGI(TAG, "Address: http://%s", sta.c_str());
     } else {
-        ESP_LOGI(TAG, "Not connected");
+        ESP_LOGI(TAG, "Address: none (no DHCP lease)");
+    }
+
+    if (wifi_ap_active()) {
+        const std::string ap_addr = wifi_ap_address();
+        ESP_LOGI(TAG, "Setup access point '%s' up: http://%s (%s)",
+                 wifi_ap_ssid().c_str(), WIFI_SETUP_HOSTNAME,
+                 ap_addr.empty() ? "no address" : ap_addr.c_str());
     }
     return 0;
 }
@@ -106,7 +139,7 @@ void console_init(OtaUpdater& ota)
 
     const esp_console_cmd_t wifi_status_cmd = {
         .command = "wifi_status",
-        .help = "Show WiFi connection status",
+        .help = "Show network state, signal and the device's address",
         .hint = nullptr,
         .func = &cmd_wifi_status,
         .argtable = nullptr,
