@@ -8,7 +8,12 @@ DEVICE ?= $(firstword $(wildcard /dev/cu.usbmodem* /dev/cu.usbserial*))
 ESPTOOL  ?= uvx esptool
 MINITERM ?= uvx --from pyserial pyserial-miniterm
 
-.PHONY: build shell flash monitor erase require-device
+# Read out of partitions.csv rather than written here, so this cannot quietly
+# erase the wrong region if the layout ever moves.
+NVS_OFFSET = $(shell awk -F, '/^[[:space:]]*nvs[[:space:]]*,/ {gsub(/[[:space:]]/,"",$$4); print $$4; exit}' partitions.csv)
+NVS_SIZE   = $(shell awk -F, '/^[[:space:]]*nvs[[:space:]]*,/ {gsub(/[[:space:]]/,"",$$5); print $$5; exit}' partitions.csv)
+
+.PHONY: build shell flash monitor erase clear-nvs require-device
 
 # Build the project in Docker (no serial port needed)
 build:
@@ -45,6 +50,35 @@ flash: build require-device
 erase: require-device
 	$(ESPTOOL) --chip esp32c3 -p $(DEVICE) erase-flash
 
-# Monitor serial output from the host
+# Erase stored configuration only, leaving the firmware in place: WiFi
+# credentials, the web interface password, the access point passphrase and the
+# broker URI all go, and the device comes back up in first-run setup on its
+# fallback access point.
+#
+# The same thing the GPIO10 factory reset does, which is the point - it is how
+# that path gets exercised without opening the robot, and how a device gets back
+# to a clean first boot without the several minutes a full erase and reflash
+# costs. Unlike `erase` it leaves both OTA slots and otadata untouched, so the
+# running image and its rollback partner survive.
+clear-nvs: require-device
+	@test -n "$(NVS_OFFSET)" -a -n "$(NVS_SIZE)" || { \
+		echo "No nvs partition found in partitions.csv"; \
+		exit 1; \
+	}
+	@echo "Erasing nvs at $(NVS_OFFSET), $(NVS_SIZE) bytes (configuration only)"
+	$(ESPTOOL) --chip esp32c3 -p $(DEVICE) \
+		--before=default-reset --after=hard-reset \
+		erase-region $(NVS_OFFSET) $(NVS_SIZE)
+
+# Monitor serial output from the host.
+#
+# Ctrl-C quits, rather than miniterm's default Ctrl-] which nobody reaches for
+# and which leaves the port locked against `make flash` and `make clear-nvs`
+# when the window is simply walked away from.
+#
+# The cost is that Ctrl-C can no longer be typed *through* to the device. That
+# is a fair trade here: this port carries the ESP's own console, which has
+# nothing long-running to interrupt, and the robot's UART is reached from the
+# web interface's Serial tab rather than from this terminal.
 monitor: require-device
-	$(MINITERM) $(DEVICE) 115200
+	$(MINITERM) --exit-char 3 $(DEVICE) 115200
