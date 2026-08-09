@@ -152,5 +152,11 @@ Phase 5: Documentation → Review
 
 ---
 
-**Current Phase:** Project Setup
-**Next Milestone:** Docker environment + basic CMake structure
+**Current Phase:** Hardening and integration
+**Next Milestone:** Drive the real robot over the serial link, replacing the
+simulated vacuum state machine
+
+**Standing constraint:** the network boundary is hostile. Anything reachable
+from `main/webserver.cpp` must validate its input where it arrives, must not
+call `ESP_ERROR_CHECK` on a value the network chose, and must not allocate on a
+length the client supplied. See the Security section of the README.
