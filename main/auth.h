@@ -32,7 +32,9 @@ void init();
 bool configured();
 
 // Replaces the password and invalidates every existing session, so a password
-// change locks out anyone already holding a token.
+// change locks out anyone already holding a token. Does not check the old
+// password: the caller decides whether this is first-run setup (where there is
+// none) or a change (where verify_password() must pass first).
 esp_err_t set_password(std::string_view password);
 
 // Constant-time. Returns false when no password has been set yet.
@@ -45,14 +47,25 @@ bool throttled();
 void note_failure();
 void note_success();
 
-// Returns a new token, or an empty string if no session slot was free.
+// Returns a new token. When every slot is in use the one closest to expiry is
+// signed out to make room: the owner reaching for a fifth browser is not the
+// threat the fixed table exists to stop, and refusing them left the only way
+// into a sealed device unusable for up to a session's lifetime.
 std::string create_session();
 
 // Validates a token and extends its lifetime. Constant-time in the token
 // comparison, so a valid prefix cannot be found one character at a time.
+//
+// For requests a user actually made. A passive check must use session_alive()
+// instead, or an idle-but-open connection would renew a session forever.
 bool validate_session(std::string_view token);
 
+// Whether a token is still good, without extending anything. This is what the
+// WebSocket fanout uses: a socket that merely stays open must not keep its own
+// session alive, or the timeout would mean nothing for the one client that
+// holds a connection permanently.
+bool session_alive(std::string_view token);
+
 void destroy_session(std::string_view token);
-void destroy_all_sessions();
 
 }  // namespace Auth

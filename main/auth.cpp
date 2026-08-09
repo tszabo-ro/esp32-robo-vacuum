@@ -60,6 +60,25 @@ public:
     Lock& operator=(const Lock&) = delete;
 };
 
+// Returns the live session matching `token`, clearing any expired slot it
+// passes on the way. Must be called with the lock held.
+Session* find_live_session(std::string_view token, int64_t now)
+{
+    for (auto& s : s_sessions) {
+        if (s.token[0] == '\0') continue;
+        if (s.expires_us <= now) {
+            s = Session{};
+            continue;
+        }
+        if (text::constant_time_equal(reinterpret_cast<const uint8_t*>(s.token),
+                                      reinterpret_cast<const uint8_t*>(token.data()),
+                                      Auth::TOKEN_CHARS)) {
+            return &s;
+        }
+    }
+    return nullptr;
+}
+
 esp_err_t derive(std::string_view password, const uint8_t* salt, uint8_t* out)
 {
     const int ret = mbedtls_pkcs5_pbkdf2_hmac_ext(
@@ -212,16 +231,35 @@ std::string Auth::create_session()
     const int64_t now = esp_timer_get_time();
 
     Lock lock;
-    for (auto& s : s_sessions) {
-        if (s.token[0] != '\0' && s.expires_us > now) continue;
 
-        random_hex(s.token, TOKEN_CHARS);
-        s.expires_us = now + SESSION_TTL_US;
-        return std::string(s.token);
+    // Prefers a slot that is free or has already lapsed; failing that, takes
+    // the one closest to expiring. Refusing instead meant four live sessions
+    // locked the owner out of their own device until one of them timed out -
+    // and with the table also being the thing that stops a client growing the
+    // device's memory, the cap has to stay, so the oldest gives way.
+    Session* chosen = nullptr;
+    bool evicting = false;
+    for (auto& s : s_sessions) {
+        if (s.token[0] == '\0' || s.expires_us <= now) {
+            chosen = &s;
+            evicting = false;
+            break;
+        }
+        if (!chosen || s.expires_us < chosen->expires_us) {
+            chosen = &s;
+            evicting = true;
+        }
+    }
+    if (!chosen) return {};
+
+    if (evicting) {
+        ESP_LOGW(TAG, "All %d session slots were in use; signing out the oldest",
+                 static_cast<int>(MAX_SESSIONS));
     }
 
-    ESP_LOGW(TAG, "All %d session slots are in use", static_cast<int>(MAX_SESSIONS));
-    return {};
+    random_hex(chosen->token, TOKEN_CHARS);
+    chosen->expires_us = now + SESSION_TTL_US;
+    return std::string(chosen->token);
 }
 
 bool Auth::validate_session(std::string_view token)
@@ -231,20 +269,19 @@ bool Auth::validate_session(std::string_view token)
     const int64_t now = esp_timer_get_time();
 
     Lock lock;
-    for (auto& s : s_sessions) {
-        if (s.token[0] == '\0') continue;
-        if (s.expires_us <= now) {
-            s = Session{};
-            continue;
-        }
-        if (text::constant_time_equal(reinterpret_cast<const uint8_t*>(s.token),
-                                      reinterpret_cast<const uint8_t*>(token.data()),
-                                      TOKEN_CHARS)) {
-            s.expires_us = now + SESSION_TTL_US;
-            return true;
-        }
-    }
-    return false;
+    Session* s = find_live_session(token, now);
+    if (!s) return false;
+
+    s->expires_us = now + SESSION_TTL_US;
+    return true;
+}
+
+bool Auth::session_alive(std::string_view token)
+{
+    if (token.size() != TOKEN_CHARS) return false;
+
+    Lock lock;
+    return find_live_session(token, esp_timer_get_time()) != nullptr;
 }
 
 void Auth::destroy_session(std::string_view token)
@@ -252,19 +289,6 @@ void Auth::destroy_session(std::string_view token)
     if (token.size() != TOKEN_CHARS) return;
 
     Lock lock;
-    for (auto& s : s_sessions) {
-        if (s.token[0] == '\0') continue;
-        if (text::constant_time_equal(reinterpret_cast<const uint8_t*>(s.token),
-                                      reinterpret_cast<const uint8_t*>(token.data()),
-                                      TOKEN_CHARS)) {
-            s = Session{};
-            return;
-        }
-    }
-}
-
-void Auth::destroy_all_sessions()
-{
-    Lock lock;
-    for (auto& s : s_sessions) s = Session{};
+    Session* s = find_live_session(token, esp_timer_get_time());
+    if (s) *s = Session{};
 }
