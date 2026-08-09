@@ -193,6 +193,7 @@ esp_err_t WebServer::start()
         {"/api/setup",    HTTP_POST, handle_post_setup,   false},  // public until configured
         {"/api/login",    HTTP_POST, handle_post_login,   false},  // public
         {"/api/logout",   HTTP_POST, handle_post_logout,  false},
+        {"/api/password", HTTP_POST, handle_post_password, false},
         {"/api/status",   HTTP_GET,  handle_get_status,   false},
         {"/api/wifi",     HTTP_POST, handle_post_wifi,    false},
         {"/api/mqtt",     HTTP_POST, handle_post_mqtt,    false},
@@ -680,6 +681,66 @@ esp_err_t WebServer::handle_post_logout(httpd_req_t* req)
 
     httpd_resp_set_hdr(req, "Set-Cookie", "sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
     return send_json(req, R"({"ok":true})");
+}
+
+// The password had no way of being changed at all: first-run setup answers 409
+// once it has run, so a password that leaked could only be replaced by a factory
+// reset - which also takes the WiFi credentials and the broker with it.
+esp_err_t WebServer::handle_post_password(httpd_req_t* req)
+{
+    if (!allow_session_json(req)) return refusal_result(req);
+
+    auto body = read_body(req);
+    if (!body) return refusal_result(req);
+
+    JsonDoc doc(cJSON_Parse(body->c_str()));
+    if (!doc) return bad_request(req, "Invalid JSON");
+
+    const char* current = string_field(doc.get(), "current", Auth::MAX_PASSWORD);
+    const char* next = string_field(doc.get(), "password", Auth::MAX_PASSWORD);
+    if (!current || !next) return bad_request(req, "Missing current/password");
+
+    // Throttled on the same counter the login form uses. A session is needed to
+    // get here, but this is still a place to guess the password, and leaving it
+    // off that counter would make it the unthrottled one.
+    if (Auth::throttled()) {
+        return send_status(req, "429 Too Many Requests", "Too many attempts, wait a moment");
+    }
+    if (!Auth::verify_password(current)) {
+        Auth::note_failure();
+        ESP_LOGW(TAG, "Password change refused: the current password did not match");
+        return send_status(req, "401 Unauthorized", "Current password is incorrect");
+    }
+    Auth::note_success();
+
+    esp_err_t err = Auth::set_password(next);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return bad_request(req, "Password must be 8 to 64 characters");
+    }
+    if (err != ESP_OK) {
+        return send_status(req, "500 Internal Server Error", "Could not store the password");
+    }
+
+    // set_password signs out every session, which is the point - including any
+    // WebSocket, whose next frame finds its token gone. That also signs out the
+    // browser doing the changing, so it is handed a fresh one rather than being
+    // thrown back to the sign-in screen for having done the right thing.
+    const std::string token = Auth::create_session();
+    if (token.empty()) {
+        return send_status(req, "503 Service Unavailable", "Password changed; sign in again");
+    }
+    set_session_cookie(req, token);
+
+    ESP_LOGW(TAG, "Web interface password changed; all other sessions signed out");
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "token", token.c_str());
+    char* json = cJSON_PrintUnformatted(root);
+    esp_err_t ret = send_json(req, json ? json : R"({"ok":true})");
+    cJSON_free(json);
+    cJSON_Delete(root);
+    return ret;
 }
 
 esp_err_t WebServer::handle_get_status(httpd_req_t* req)

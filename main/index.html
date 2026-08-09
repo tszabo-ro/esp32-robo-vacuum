@@ -192,6 +192,16 @@ build you made.</div>
 <button class="warn-btn" id="start-ota">Update firmware</button>
 </div>
 <div class="card">
+<h2>Interface Password</h2>
+<div class="note">Changing this signs out every other browser and script, and
+closes any open log or serial stream.</div>
+<div class="field"><label>Current password</label><input id="pw-current" type="password" autocomplete="current-password"></div>
+<div class="field"><label>New password (8+ characters)</label><input id="pw-new" type="password" maxlength="64" autocomplete="new-password"></div>
+<div class="field"><label>Confirm new password</label><input id="pw-confirm" type="password" maxlength="64" autocomplete="new-password"></div>
+<button class="save-btn" id="save-password">Change password</button>
+<div class="err" id="pw-err"></div>
+</div>
+<div class="card">
 <h2>Session</h2>
 <button class="plain-btn" id="logout">Sign out</button>
 </div>
@@ -448,6 +458,25 @@ function logout(){
   post('/api/logout',{}).then(()=>showGate(false)).catch(()=>showGate(false));
 }
 
+/* The device hands back a fresh session, because changing the password signs
+   out every existing one - including this browser's. Without that the reward
+   for rotating the password would be being thrown back to the sign-in screen. */
+function changePassword(){
+  const current=$('pw-current').value, next=$('pw-new').value;
+  $('pw-err').textContent='';
+  if(next.length<8){$('pw-err').textContent='New password must be at least 8 characters';return}
+  if(next!==$('pw-confirm').value){$('pw-err').textContent='New passwords do not match';return}
+
+  post('/api/password',{current:current,password:next}).then(j=>{
+    if(j.ok){
+      $('pw-current').value='';$('pw-new').value='';$('pw-confirm').value='';
+      alert('Password changed. Every other session has been signed out.');
+    }else{
+      $('pw-err').textContent=j.error||'Could not change the password';
+    }
+  }).catch(()=>{});
+}
+
 /* --- Status --- */
 
 /* textContent and classList throughout. These two rows used to be assembled as
@@ -515,6 +544,8 @@ $('save-wifi').addEventListener('click',saveWifi);
 $('save-ap').addEventListener('click',saveAp);
 $('save-mqtt').addEventListener('click',saveMqtt);
 $('start-ota').addEventListener('click',startOta);
+$('save-password').addEventListener('click',changePassword);
+$('pw-confirm').addEventListener('keydown',e=>{if(e.key==='Enter')changePassword()});
 $('logout').addEventListener('click',logout);
 
 boot();

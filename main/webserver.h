@@ -31,6 +31,7 @@ private:
     static esp_err_t handle_post_setup(httpd_req_t* req);
     static esp_err_t handle_post_login(httpd_req_t* req);
     static esp_err_t handle_post_logout(httpd_req_t* req);
+    static esp_err_t handle_post_password(httpd_req_t* req);
     static esp_err_t handle_get_status(httpd_req_t* req);
     static esp_err_t handle_post_wifi(httpd_req_t* req);
     static esp_err_t handle_post_mqtt(httpd_req_t* req);
