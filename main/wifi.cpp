@@ -91,6 +91,10 @@ static bool s_ap_forced = false;
 static esp_netif_t* s_ap_netif = nullptr;
 static std::string s_ap_ssid;
 static bool s_ap_password_default = true;
+// Whether the flag above has been established yet. It is read by the status
+// endpoint, which a browser polls every few seconds, so the answer is worked
+// out once and remembered rather than re-read from NVS on every poll.
+static bool s_ap_password_known = false;
 
 // Guards every one of the above and every radio state transition. They are
 // written from three tasks - the event loop, the reconnect timer, and whichever
@@ -140,9 +144,14 @@ static std::string build_ap_ssid()
 }
 
 // Fills `out` with the stored passphrase, or the bootstrap default when there
-// is none. Never returns something too short for WPA2: the access point is the
-// recovery interface, and an open one would let anyone in range reach it.
-static void load_ap_password(char* out, size_t len)
+// is none, and returns whether what it produced is that default. Never returns
+// something too short for WPA2: the access point is the recovery interface, and
+// an open one would let anyone in range reach it.
+//
+// Reports rather than records. It used to write s_ap_password_default itself,
+// which made a predicate named "is the password the default" the thing that
+// decided what the default was - reached from a GET handler, on every poll.
+static bool load_ap_password(char* out, size_t len)
 {
     nvs_handle_t handle;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
@@ -150,9 +159,7 @@ static void load_ap_password(char* out, size_t len)
         esp_err_t err = nvs_get_str(handle, "ap_pass", out, &stored);
         nvs_close(handle);
         if (err == ESP_OK && strlen(out) >= WIFI_MIN_AP_PASSWORD) {
-            WifiLock lock;
-            s_ap_password_default = (strcmp(out, DEFAULT_AP_PASSWORD) == 0);
-            return;
+            return strcmp(out, DEFAULT_AP_PASSWORD) == 0;
         }
         if (err == ESP_OK) {
             ESP_LOGW(TAG, "Stored access point password is too short for WPA2, using the default");
@@ -160,8 +167,25 @@ static void load_ap_password(char* out, size_t len)
     }
 
     copy_bounded(out, len, DEFAULT_AP_PASSWORD);
-    WifiLock lock;
-    s_ap_password_default = true;
+    return true;
+}
+
+// Logs rather than discarding the result. A refusal here produces no event and
+// no state change, so without this a device that the driver would not even
+// attempt to connect for looked exactly like one that was trying and failing.
+static void request_connect(const char* context)
+{
+    const esp_err_t err = esp_wifi_connect();
+    if (err == ESP_OK) return;
+
+    // Expected while the rescue access point is up with nothing stored yet: the
+    // station interface still starts, and still reports that it has, but there
+    // is nothing for it to join until credentials arrive.
+    if (err == ESP_ERR_WIFI_SSID) {
+        ESP_LOGD(TAG, "%s: no SSID configured yet", context);
+        return;
+    }
+    ESP_LOGW(TAG, "%s: could not start a connection attempt: %s", context, esp_err_to_name(err));
 }
 
 // Brings the rescue network up. Runs alongside the station (APSTA) so retries
@@ -187,7 +211,8 @@ static esp_err_t start_ap()
     s_ap_ssid = build_ap_ssid();
 
     char password[WIFI_MAX_PASSWORD + 1] = {};
-    load_ap_password(password, sizeof(password));
+    s_ap_password_default = load_ap_password(password, sizeof(password));
+    s_ap_password_known = true;
 
     wifi_config_t cfg = {};
     copy_bounded(reinterpret_cast<char*>(cfg.ap.ssid), sizeof(cfg.ap.ssid), s_ap_ssid.c_str());
@@ -319,7 +344,7 @@ static void reconnect_timer_cb(void*)
         if (s_retry_count >= RETRIES_BEFORE_REPORTING_FAILURE) start_ap();
     }
 
-    esp_wifi_connect();
+    request_connect("Scheduled retry");
 }
 
 static void schedule_reconnect()
@@ -356,7 +381,7 @@ static void schedule_reconnect()
 static void event_handler(void* arg, esp_event_base_t base, int32_t id, void* data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        request_connect("Station started");
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
         // Associated, but not usable until DHCP produces an address.
         ESP_LOGI(TAG, "Associated, waiting for an address");
@@ -509,7 +534,7 @@ static esp_err_t connect_with(const char* ssid, const char* password)
         } else {
             // Already running, so just move the station onto the new credentials.
             esp_wifi_disconnect();
-            esp_wifi_connect();
+            request_connect("New credentials");
         }
 
         ESP_LOGI(TAG, "Connecting to '%s'...", ssid);
@@ -682,12 +707,17 @@ bool wifi_is_default_ap_password(const char* candidate)
 
 bool wifi_ap_password_is_default()
 {
-    // Reads through the same path the access point uses, so the answer reflects
-    // what would actually be advertised rather than a cached guess.
-    char password[WIFI_MAX_PASSWORD + 1] = {};
-    load_ap_password(password, sizeof(password));
-
     WifiLock lock;
+
+    // Worked out through the same path the access point uses, so the answer
+    // reflects what would actually be advertised - but only once. Every writer
+    // of the stored value updates the flag, and a factory reset takes the whole
+    // device down with it, so there is nothing that can make this go stale.
+    if (!s_ap_password_known) {
+        char password[WIFI_MAX_PASSWORD + 1] = {};
+        s_ap_password_default = load_ap_password(password, sizeof(password));
+        s_ap_password_known = true;
+    }
     return s_ap_password_default;
 }
 
@@ -711,6 +741,7 @@ esp_err_t wifi_set_ap_password(const char* password)
     if (err == ESP_OK) {
         WifiLock lock;
         s_ap_password_default = wifi_is_default_ap_password(password);
+        s_ap_password_known = true;
         ESP_LOGI(TAG, "Access point password updated, effective next time it starts");
     }
     return err;
