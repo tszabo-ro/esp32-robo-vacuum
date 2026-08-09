@@ -36,6 +36,14 @@ void Vacuum::return_to_base()
     xSemaphoreGive(mutex_);
 }
 
+bool Vacuum::command(std::string_view name)
+{
+    if (name == "start")          { start();          return true; }
+    if (name == "stop")           { stop();           return true; }
+    if (name == "return_to_base") { return_to_base(); return true; }
+    return false;
+}
+
 void Vacuum::tick()
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
