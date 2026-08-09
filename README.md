@@ -226,6 +226,12 @@ itself. Signing in returns a random 128-bit token in an `HttpOnly`,
 out. Repeated failures are throttled rather than locked out permanently — a
 permanent lockout on a sealed device is a self-inflicted brick.
 
+**Changing the password** signs out every other session, and takes any open
+WebSocket with it. `POST /api/password` with `{"current": "...", "password":
+"..."}` behind a session; wrong current passwords go on the same throttle as the
+login form. The browser that made the change is handed a fresh session so it is
+not signed out for doing the right thing.
+
 **Every endpoint is behind a session**, including the WebSocket upgrade. That
 one matters most: a WebSocket is not covered by the same-origin policy, so
 without a check on the upgrade any page in any tab could open one to the device
@@ -233,6 +239,15 @@ and both drive it and read its log. State-changing requests must additionally
 carry an `Origin` matching `Host` and a `Content-Type: application/json`, which
 between them stop a cross-origin form or a `no-cors` fetch from reaching a
 handler.
+
+**A WebSocket is checked for as long as it is open, not only when it opens.**
+Each socket remembers the session that authorized it. Every inbound frame is
+revalidated before it is acted on, and the outbound fanout drops any socket
+whose session has gone. Without that, authorising the upgrade was a decision
+made once about a connection that outlives it: signing out left a socket that
+still received the log *and* could still write to the robot's UART. The passive
+check does not extend the session — otherwise the one client that never
+disconnects would keep itself signed in forever.
 
 The log stream is treated as privileged for the same reason: it carries the
 station's SSID, the broker URI and whatever a future log line happens to
@@ -288,6 +303,14 @@ still serving; the WebSocket upgrade closed with zero frames delivered both
 unauthenticated and cross-origin; repeated bad passwords throttled; and the
 captive portal answering probes rather than capturing, now that a password
 exists.
+
+**Not yet re-verified on hardware**, and worth doing before this is sealed into
+a robot: per-frame WebSocket revalidation and the socket being dropped when its
+session ends; the password change endpoint; session eviction once five sessions
+exist; the captive DNS now bound to the access point's address rather than to
+every interface; and the single-sender WebSocket fanout under two producers at
+once. These build clean and the parsers they rely on are covered by the host
+tests, but neither of those is the same as a device on a network.
 
 ## Power
 
@@ -345,12 +368,32 @@ this copy.
 
 ```bash
 make build       # compile the project (in Docker)
+make test        # run the host tests (no Docker, no hardware)
 make flash       # build + flash (flashes from host)
 make monitor     # open serial monitor (from host); Ctrl-C quits
 make clear-nvs   # erase stored configuration, keeping the firmware
 make erase       # wipe the entire flash
 make shell       # interactive container shell
 ```
+
+### Tests
+
+`make test` builds and runs `test/` on the host — no Docker, no toolchain, no
+board. It covers the code that parses or renders something chosen from outside
+the device, which is where a bug here is a security bug rather than a nuisance:
+the captive portal's DNS parser, the `Origin` and `Content-Type` checks, broker
+URI redaction, UART escaping, and the constant-time compare.
+
+Those live in `main/text_util.*` and `main/dns_message.*`, deliberately free of
+any ESP-IDF include, which is the only reason they can be tested this way. The
+rest of the firmware is welded to the platform and is verified on a device.
+
+Worth knowing about the DNS cases: they are written against a buffer long
+enough that the compression-pointer rejection is the only thing that can refuse
+the packet. An earlier version of that test used a short message, where the
+length check refused it first — so the pointer check could be deleted with every
+test still passing. If you add cases there, delete the line you think you are
+covering and confirm something actually goes red.
 
 `clear-nvs` erases the `nvs` partition only — WiFi credentials, the interface
 password, the access point passphrase and the broker URI — and leaves both OTA
