@@ -270,6 +270,24 @@ above.
 - **MQTT credentials in the URI leak to anyone with a session.** They are
   redacted in the log and in `/api/status` (`mqtt://***@host`), but the full URI
   is still stored in plaintext NVS.
+- **A request that announces a body and sends nothing costs a few seconds of
+  the server.** It is held in ESP-IDF's request parser, which loops reading
+  until the request is complete, before any handler runs — so nothing in this
+  firmware can refuse it earlier. The receive timeout is lowered to three
+  seconds to shorten it. Repeated in a loop it makes the interface sluggish; it
+  cannot allocate anything or reboot the device.
+
+### Verified on hardware
+
+The checks above were exercised against a real device on the LAN, not just
+reasoned about: unauthenticated reads and `/api/ota` refused; a session cookie
+with a foreign or absent `Origin` refused on writes while a safe read is let
+through to the token check; a non-JSON `Content-Type` refused; an 8 MB body
+announced and partially sent refused and disconnected in 0.03s with the device
+still serving; the WebSocket upgrade closed with zero frames delivered both
+unauthenticated and cross-origin; repeated bad passwords throttled; and the
+captive portal answering probes rather than capturing, now that a password
+exists.
 
 ## Power
 

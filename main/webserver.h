@@ -43,10 +43,15 @@ private:
     // themselves on refusal, so a handler that forgets to check cannot fall
     // through to the work: it either returns early or never sees a body.
 
-    // Session required. `origin_required` is false only for safe reads, which
-    // browsers send without an Origin header; everything that changes state
-    // passes true.
-    static esp_err_t require_session(httpd_req_t* req, bool origin_required);
+    // True when the request may proceed. On false the reply has already been
+    // sent and the handler must stop - returning ESP_OK, so the server drains
+    // the request body and does not reset the connection.
+    //
+    // Deliberately not an esp_err_t: returning one is what let a refusal be
+    // read as permission, because the value that came back from sending the
+    // rejection was ESP_OK. `origin_required` is false only for safe reads,
+    // which browsers send without an Origin header.
+    static bool allow_session(httpd_req_t* req, bool origin_required);
 
     // The same test without a reply. The WebSocket handler needs this: the
     // upgrade response has already been sent by the time it runs, so writing an
@@ -56,11 +61,11 @@ private:
     // Session required, plus Content-Type: application/json. The content type
     // is what forces a cross-origin POST through a preflight rather than being
     // dispatched as a "simple request" the browser will happily send.
-    static esp_err_t require_session_json(httpd_req_t* req);
+    static bool allow_session_json(httpd_req_t* req);
 
     // For the unauthenticated POSTs (login, first-run setup): no session, but
     // the same JSON and Origin requirements.
-    static esp_err_t require_json(httpd_req_t* req);
+    static bool allow_json(httpd_req_t* req);
 
     // A present Origin must always match Host. Whether an absent one is
     // acceptable depends on the request: see the definition.
@@ -78,10 +83,13 @@ private:
     static esp_err_t send_status(httpd_req_t* req, const char* status, const char* message);
     static esp_err_t bad_request(httpd_req_t* req, const char* message);
 
-    // Sends `status` and returns ESP_FAIL. The guards below must use this and
-    // never send_status directly: send_status returns ESP_OK when the refusal
-    // was delivered successfully, which reads to a caller as "allowed".
-    static esp_err_t refuse(httpd_req_t* req, const char* status, const char* message);
+    // Sends `status` and returns false, for the guards to return directly.
+    static bool refuse(httpd_req_t* req, const char* status, const char* message);
+
+    // What a handler returns after a guard has already answered. See the
+    // definition: whether the connection is drained or closed depends on how
+    // big the client said its body was.
+    static esp_err_t refusal_result(httpd_req_t* req);
     static void set_common_headers(httpd_req_t* req);
 
     static void session_closed(httpd_handle_t handle, int sockfd);

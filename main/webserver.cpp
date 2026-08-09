@@ -39,9 +39,9 @@ constexpr size_t MAX_OTA_URL = 256;
 constexpr size_t MAX_COMMAND = 32;
 constexpr size_t MAX_SERIAL_TX = 512;
 
-// Two timeouts is ~6 seconds on the default receive timeout. The server runs
-// one task for all sessions, so a body that has not arrived by then is costing
-// every other client, not just its own.
+// Two timeouts is ~6 seconds at the receive timeout configured below. The
+// server runs one task for all sessions, so a body that has not arrived by then
+// is costing every other client, not just its own.
 constexpr int MAX_RECV_TIMEOUTS = 2;
 
 constexpr size_t MAX_HEADER_VALUE = 128;
@@ -154,6 +154,16 @@ esp_err_t WebServer::start()
     config.close_fn = session_closed;
     // Logging in runs PBKDF2, which needs more room than a JSON handler.
     config.stack_size = 6144;
+
+    // Down from five seconds. Bodies here are configuration blobs of a few
+    // hundred bytes, so three is generous for anything legitimate, and it is
+    // the only lever on a stall no handler can reach: a request that announces
+    // a body and then sends nothing is held in the server's parser, which loops
+    // reading until the request is complete, before any handler is called. That
+    // costs the whole timeout on the one task serving every session. The parser
+    // cannot be pre-empted from here, so the cost is shortened rather than
+    // removed.
+    config.recv_wait_timeout = 3;
 
     esp_err_t err = httpd_start(&server_, &config);
     if (err != ESP_OK) {
@@ -368,18 +378,45 @@ bool WebServer::session_valid(httpd_req_t* req, bool origin_required)
     return Auth::validate_session(token);
 }
 
-// Refusal is ESP_FAIL, always - never send_status's own return value. That
-// value is whatever httpd_resp_sendstr returned, which is ESP_OK when the
-// rejection was successfully delivered, so returning it told every caller's
-// `if (err != ESP_OK)` that the request had passed. The refusal went out and
-// the handler then did the work anyway.
-esp_err_t WebServer::refuse(httpd_req_t* req, const char* status, const char* message)
+// The guards answer with false and never with an esp_err_t.
+//
+// They used to return send_status's own result, which is ESP_OK whenever the
+// rejection was delivered successfully - so every caller's `if (err != ESP_OK)`
+// read a refusal as permission, and the handler did the work anyway after
+// saying no.
+//
+// The obvious repair, returning ESP_FAIL, was worse in a quieter way. httpd
+// treats a failed handler as a dead session and closes it without draining the
+// request body, so a refused POST is answered and then reset - and a client
+// that gets an RST with the response still in flight may never see why it was
+// refused. A bool cannot be mistaken for either, and lets the handler return
+// ESP_OK so the body is drained and the connection stays usable.
+bool WebServer::refuse(httpd_req_t* req, const char* status, const char* message)
 {
     send_status(req, status, message);
-    return ESP_FAIL;
+    return false;
 }
 
-esp_err_t WebServer::require_session(httpd_req_t* req, bool origin_required)
+esp_err_t WebServer::refusal_result(httpd_req_t* req)
+{
+    // What a handler returns once a guard has answered for it.
+    //
+    // ESP_OK lets the server drain the body of the request it just refused,
+    // which keeps the connection clean and makes sure the client actually
+    // receives the reason. That is right for a body the size of a
+    // configuration blob.
+    //
+    // It is badly wrong for a body the client merely *claimed* was enormous.
+    // Draining means waiting for megabytes that are not coming, which parks the
+    // server's single task for the whole receive timeout and ends in the
+    // server's own 408 - an unauthenticated request costing seconds of the only
+    // management interface, repeatable at will. Past the cap the connection is
+    // closed instead: the answer has already gone out, and nothing about the
+    // rest of that request is worth waiting for.
+    return req->content_len > MAX_BODY_BYTES ? ESP_FAIL : ESP_OK;
+}
+
+bool WebServer::allow_session(httpd_req_t* req, bool origin_required)
 {
     // Split from session_valid so the reasons can differ in the reply. The
     // WebSocket path cannot use this one: by the time a handler runs there, the
@@ -400,7 +437,7 @@ esp_err_t WebServer::require_session(httpd_req_t* req, bool origin_required)
     if (!Auth::validate_session(token)) {
         return refuse(req, "401 Unauthorized", "session expired");
     }
-    return ESP_OK;
+    return true;
 }
 
 bool WebServer::content_type_is_json(httpd_req_t* req)
@@ -415,7 +452,7 @@ bool WebServer::content_type_is_json(httpd_req_t* req)
     return view.size() == json.size() || view[json.size()] == ';';
 }
 
-esp_err_t WebServer::require_json(httpd_req_t* req)
+bool WebServer::allow_json(httpd_req_t* req)
 {
     // Without this, a cross-origin POST qualifies as a "simple request" and is
     // dispatched with no preflight - the response is opaque to the attacker,
@@ -430,19 +467,19 @@ esp_err_t WebServer::require_json(httpd_req_t* req)
     if (!origin_ok(req, true)) {
         return refuse(req, "403 Forbidden", "bad origin");
     }
-    return ESP_OK;
+    return true;
 }
 
-esp_err_t WebServer::require_session_json(httpd_req_t* req)
+bool WebServer::allow_session_json(httpd_req_t* req)
 {
     if (!content_type_is_json(req)) {
         return refuse(req, "415 Unsupported Media Type", "expected application/json");
     }
-    // Not require_json: that one demands an Origin outright, which is right for
+    // Not allow_json: that one demands an Origin outright, which is right for
     // the two endpoints with no session behind them, but would reject a script
     // holding a bearer token - and a bearer token cannot be replayed by a
     // hostile page in the first place, so it does not need the check.
-    return require_session(req, true);
+    return allow_session(req, true);
 }
 
 // --- HTTP handlers ---
@@ -543,11 +580,10 @@ esp_err_t WebServer::handle_post_setup(httpd_req_t* req)
         return send_status(req, "409 Conflict", "already set up");
     }
 
-    esp_err_t err = require_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_json(req)) return refusal_result(req);
 
     auto body = read_body(req);
-    if (!body) return ESP_OK;  // read_body has already answered
+    if (!body) return refusal_result(req);  // read_body has already answered
 
     JsonDoc doc(cJSON_Parse(body->c_str()));
     if (!doc) return bad_request(req, "Invalid JSON");
@@ -568,7 +604,7 @@ esp_err_t WebServer::handle_post_setup(httpd_req_t* req)
     if (wifi_is_default_ap_password(ap_password)) {
         return bad_request(req, "Choose an access point password other than the default");
     }
-    err = wifi_set_ap_password(ap_password);
+    esp_err_t err = wifi_set_ap_password(ap_password);
     if (err != ESP_OK) {
         return bad_request(req, err == ESP_ERR_INVALID_ARG
             ? "Access point password must be 8 to 63 characters"
@@ -602,8 +638,7 @@ esp_err_t WebServer::handle_post_login(httpd_req_t* req)
         return send_status(req, "403 Forbidden", "setup required");
     }
 
-    esp_err_t err = require_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_json(req)) return refusal_result(req);
 
     // Throttled rather than locked out permanently: this interface is the only
     // way into a sealed device, so a permanent lockout would be self-inflicted.
@@ -612,7 +647,7 @@ esp_err_t WebServer::handle_post_login(httpd_req_t* req)
     }
 
     auto body = read_body(req);
-    if (!body) return ESP_OK;
+    if (!body) return refusal_result(req);
 
     JsonDoc doc(cJSON_Parse(body->c_str()));
     if (!doc) return bad_request(req, "Invalid JSON");
@@ -645,8 +680,7 @@ esp_err_t WebServer::handle_post_login(httpd_req_t* req)
 
 esp_err_t WebServer::handle_post_logout(httpd_req_t* req)
 {
-    esp_err_t err = require_session_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_session_json(req)) return refusal_result(req);
 
     bool from_bearer = false;
     Auth::destroy_session(session_token(req, from_bearer));
@@ -660,8 +694,7 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     // Origin not demanded: this is a read with no side effect, the page polls
     // it every three seconds, and a browser omits Origin on a same-origin GET.
     // A cross-origin page can cause the request but cannot read the reply.
-    esp_err_t err = require_session(req, false);
-    if (err != ESP_OK) return err;
+    if (!allow_session(req, false)) return refusal_result(req);
 
     auto* self = static_cast<WebServer*>(req->user_ctx);
     auto [state, battery] = self->vacuum_.status();
@@ -732,11 +765,10 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
 
 esp_err_t WebServer::handle_post_wifi(httpd_req_t* req)
 {
-    esp_err_t err = require_session_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_session_json(req)) return refusal_result(req);
 
     auto body = read_body(req);
-    if (!body) return ESP_OK;
+    if (!body) return refusal_result(req);
 
     JsonDoc doc(cJSON_Parse(body->c_str()));
     if (!doc) return bad_request(req, "Invalid JSON");
@@ -748,7 +780,7 @@ esp_err_t WebServer::handle_post_wifi(httpd_req_t* req)
     }
     if (ssid[0] == '\0') return bad_request(req, "SSID must not be empty");
 
-    err = wifi_set_credentials(ssid, pass);
+    esp_err_t err = wifi_set_credentials(ssid, pass);
     if (err != ESP_OK) {
         return send_status(req, "500 Internal Server Error", "Could not store the credentials");
     }
@@ -763,12 +795,11 @@ esp_err_t WebServer::handle_post_wifi(httpd_req_t* req)
 
 esp_err_t WebServer::handle_post_mqtt(httpd_req_t* req)
 {
-    esp_err_t err = require_session_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_session_json(req)) return refusal_result(req);
 
     auto* self = static_cast<WebServer*>(req->user_ctx);
     auto body = read_body(req);
-    if (!body) return ESP_OK;
+    if (!body) return refusal_result(req);
 
     JsonDoc doc(cJSON_Parse(body->c_str()));
     if (!doc) return bad_request(req, "Invalid JSON");
@@ -776,7 +807,7 @@ esp_err_t WebServer::handle_post_mqtt(httpd_req_t* req)
     const char* uri = string_field(doc.get(), "uri", MAX_BROKER_URI);
     if (!uri) return bad_request(req, "URI missing or longer than 128 characters");
 
-    err = self->mqtt_.set_broker(uri);
+    esp_err_t err = self->mqtt_.set_broker(uri);
     if (err == ESP_ERR_INVALID_ARG) {
         return bad_request(req, "URI must start with mqtt://, mqtts://, ws:// or wss://");
     }
@@ -790,11 +821,10 @@ esp_err_t WebServer::handle_post_mqtt(httpd_req_t* req)
 
 esp_err_t WebServer::handle_post_ap(httpd_req_t* req)
 {
-    esp_err_t err = require_session_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_session_json(req)) return refusal_result(req);
 
     auto body = read_body(req);
-    if (!body) return ESP_OK;
+    if (!body) return refusal_result(req);
 
     JsonDoc doc(cJSON_Parse(body->c_str()));
     if (!doc) return bad_request(req, "Invalid JSON");
@@ -802,7 +832,7 @@ esp_err_t WebServer::handle_post_ap(httpd_req_t* req)
     const char* password = string_field(doc.get(), "password", MAX_WIFI_PASSWORD);
     if (!password) return bad_request(req, "Password missing or longer than 63 characters");
 
-    err = wifi_set_ap_password(password);
+    esp_err_t err = wifi_set_ap_password(password);
     if (err == ESP_ERR_INVALID_ARG) {
         return bad_request(req, "Password must be 8 to 63 characters");
     }
@@ -816,12 +846,11 @@ esp_err_t WebServer::handle_post_ap(httpd_req_t* req)
 
 esp_err_t WebServer::handle_post_serial(httpd_req_t* req)
 {
-    esp_err_t err = require_session_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_session_json(req)) return refusal_result(req);
 
     auto* self = static_cast<WebServer*>(req->user_ctx);
     auto body = read_body(req);
-    if (!body) return ESP_OK;
+    if (!body) return refusal_result(req);
 
     JsonDoc doc(cJSON_Parse(body->c_str()));
     if (!doc) return bad_request(req, "Invalid JSON");
@@ -835,7 +864,7 @@ esp_err_t WebServer::handle_post_serial(httpd_req_t* req)
         return bad_request(req, "Baud rate out of range");
     }
 
-    err = self->serial_.set_baud(static_cast<uint32_t>(baud->valuedouble));
+    esp_err_t err = self->serial_.set_baud(static_cast<uint32_t>(baud->valuedouble));
     if (err == ESP_ERR_INVALID_ARG) return bad_request(req, "Baud rate out of range");
     if (err != ESP_OK) {
         return send_status(req, "500 Internal Server Error", "Could not change the baud rate");
@@ -845,12 +874,11 @@ esp_err_t WebServer::handle_post_serial(httpd_req_t* req)
 
 esp_err_t WebServer::handle_post_command(httpd_req_t* req)
 {
-    esp_err_t err = require_session_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_session_json(req)) return refusal_result(req);
 
     auto* self = static_cast<WebServer*>(req->user_ctx);
     auto body = read_body(req);
-    if (!body) return ESP_OK;
+    if (!body) return refusal_result(req);
 
     JsonDoc doc(cJSON_Parse(body->c_str()));
     if (!doc) return bad_request(req, "Invalid JSON");
@@ -864,12 +892,11 @@ esp_err_t WebServer::handle_post_command(httpd_req_t* req)
 
 esp_err_t WebServer::handle_post_ota(httpd_req_t* req)
 {
-    esp_err_t err = require_session_json(req);
-    if (err != ESP_OK) return err;
+    if (!allow_session_json(req)) return refusal_result(req);
 
     auto* self = static_cast<WebServer*>(req->user_ctx);
     auto body = read_body(req);
-    if (!body) return ESP_OK;
+    if (!body) return refusal_result(req);
 
     JsonDoc doc(cJSON_Parse(body->c_str()));
     if (!doc) return bad_request(req, "Invalid JSON");
@@ -887,7 +914,7 @@ esp_err_t WebServer::handle_post_ota(httpd_req_t* req)
         return bad_request(req, "URL must be https://");
     }
 
-    err = self->ota_.start(url);
+    esp_err_t err = self->ota_.start(url);
     if (err == ESP_ERR_INVALID_STATE) {
         return send_status(req, "409 Conflict", "An update is already running");
     }
