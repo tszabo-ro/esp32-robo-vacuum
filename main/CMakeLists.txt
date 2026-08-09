@@ -1,7 +1,9 @@
 idf_component_register(
-    SRCS 
-    	"main.cpp" 
-	"wifi.cpp" 
+    SRCS
+    	"main.cpp"
+	"wifi.cpp"
+	"auth.cpp"
+	"captive_dns.cpp"
 	"console.cpp"
 	"vacuum.cpp"
 	"mqtt.cpp"
@@ -25,6 +27,9 @@ idf_component_register(
         esp_http_client
         esp_https_ota
         esp-tls
+        mbedtls
+        lwip
+        esp_netif
     EMBED_TXTFILES
         "index.html"
 )
