@@ -21,7 +21,7 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 .btn-start{background:#2a5a2a;color:#4f4}
 .btn-stop{background:#5a2a2a;color:#f44}
 .btn-dock{background:#2a3a5a;color:#4af}
-#log-output{height:50vh;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;background:#0a0a0a;color:#0c0;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all}
+#log-output{height:56vh;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;background:#0a0a0a;color:#0c0;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all}
 /* Serial output is a single text node rather than per-line divs: UART data
    arrives in arbitrary chunks, not neat lines. */
 #serial-output{height:46vh;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;background:#0a0a0a;color:#6cf;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all}
@@ -36,32 +36,96 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 .field label{display:block;font-size:12px;color:#888;margin-bottom:2px}
 .field input{width:100%;padding:8px;background:#1a1a1a;border:1px solid #333;color:#fff;border-radius:4px}
 .save-btn{padding:8px 16px;background:#2a5a2a;color:#4f4;border:none;border-radius:4px;cursor:pointer;margin-top:4px}
+.warn-btn{padding:8px 16px;background:#5a4a2a;color:#fc4;border:none;border-radius:4px;cursor:pointer;margin-top:4px}
+.plain-btn{padding:8px 16px;background:#333;color:#ccc;border:none;border-radius:4px;cursor:pointer;margin-top:4px}
 .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
 .dot-on{background:#4f4}.dot-off{background:#f44}
+.note{font-size:12px;color:#888;margin-bottom:8px;line-height:1.4}
+.warning{background:#3a2a10;color:#fc4;border-radius:6px;padding:10px;margin-bottom:8px;font-size:13px}
+.err{color:#f66;font-size:13px;margin-top:6px;min-height:16px}
+#gate{max-width:360px;margin:10vh auto 0}
 </style>
 </head>
 <body>
+
+<!-- Shown first, and shown by default in the markup rather than switched on by
+     script. The page used to start with every panel hidden and reveal one only
+     after /api/auth answered, so a single failed request left a blank page
+     retrying silently with nothing on screen at all - the worst thing a
+     recovery interface can do, because it gives you nothing to act on. -->
+<div id="boot">
+<div class="card">
+<h2 id="boot-title">Contacting the device…</h2>
+<div class="note" id="boot-note">If this does not clear, the device may have
+dropped off the network.</div>
+<button class="plain-btn" id="boot-retry" style="display:none">Retry</button>
+</div>
+</div>
+
+<!-- First-run setup ends here rather than dropping into the interface. On a
+     fresh device this page is being shown inside the client's sign-in window,
+     which is a cramped panel that closes on its own the moment the device
+     reports the network as usable - a bad place to be configuring WiFi. So say
+     what happened, say where to go, and let the window close. -->
+<div id="done" style="display:none">
+<div class="card">
+<h2>Setup complete</h2>
+<div class="note">The interface password and the recovery network passphrase are
+both set. You can close this window.</div>
+<div class="note" id="done-where"></div>
+<div class="note">Sign in there with the password you just chose, then set your
+WiFi details under Settings.</div>
+</div>
+</div>
+
+<!-- Shown until there is a session. The rest of the page is not merely hidden
+     from view: every endpoint behind it refuses an unauthenticated request, so
+     this is a convenience, not the control. -->
+<div id="gate" style="display:none">
+<div class="card">
+<h2 id="gate-title">Sign in</h2>
+<div id="setup-note" class="note" style="display:none">
+This device has not been set up yet. Choose a password for this interface, and a
+new passphrase for the <span id="setup-ap-name">setup</span> recovery network -
+the built-in one is published in this project's source, so anyone within radio
+range knows it.
+</div>
+<div class="field"><label>Interface password</label><input id="gate-pass" type="password" autocomplete="current-password"></div>
+<div class="field" id="gate-confirm-field" style="display:none"><label>Confirm password</label><input id="gate-confirm" type="password" autocomplete="new-password"></div>
+<div class="field" id="gate-ap-field" style="display:none"><label>Recovery network passphrase (8+ characters)</label><input id="gate-ap" type="password" autocomplete="new-password"></div>
+<button class="save-btn" id="gate-submit">Sign in</button>
+<div class="err" id="gate-err"></div>
+<div class="note" id="gate-addr" style="margin-top:10px"></div>
+</div>
+</div>
+
+<div id="app" style="display:none">
 <nav>
-<button class="active" onclick="tab('status')">Status</button>
-<button onclick="tab('console')">Console</button>
-<button onclick="tab('serial')">Serial</button>
-<button onclick="tab('settings')">Settings</button>
+<button class="active" data-tab="status">Status</button>
+<button data-tab="log">Log</button>
+<button data-tab="serial">Serial</button>
+<button data-tab="settings">Settings</button>
 </nav>
 
 <section id="status" class="active">
+<div class="warning" id="ap-warning" style="display:none">
+The recovery access point is using the built-in default passphrase. Set your own
+under Settings.
+</div>
 <div class="card">
 <h2>Vacuum</h2>
 <div class="row"><span class="label">State</span><span id="v-state">--</span></div>
 <div class="row"><span class="label">Battery</span><span id="v-battery">--</span></div>
 <div class="actions">
-<button class="btn-start" onclick="cmd('start')">Start</button>
-<button class="btn-stop" onclick="cmd('stop')">Stop</button>
-<button class="btn-dock" onclick="cmd('return_to_base')">Dock</button>
+<button class="btn-start" data-cmd="start">Start</button>
+<button class="btn-stop" data-cmd="stop">Stop</button>
+<button class="btn-dock" data-cmd="return_to_base">Dock</button>
 </div>
 </div>
 <div class="card">
 <h2>Connectivity</h2>
 <div class="row"><span class="label">WiFi</span><span id="w-status">--</span></div>
+<div class="row"><span class="label">Signal</span><span id="w-rssi">--</span></div>
 <div class="row" id="ap-row" style="display:none"><span class="label">Setup AP</span><span id="ap-status">--</span></div>
 <div class="row"><span class="label">MQTT</span><span id="m-status">--</span></div>
 <div class="row"><span class="label">Firmware</span><span id="fw">--</span></div>
@@ -69,17 +133,17 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 </div>
 </section>
 
-<section id="console">
+<!-- Read-only. This used to carry an input that ran whatever was typed as a
+     device console command, which made the firmware updater and the credential
+     setter reachable from any page that could open a socket here. -->
+<section id="log">
+<div class="note">Device log. Commands are on the serial console only.</div>
 <div id="log-output"></div>
-<div class="cmd-bar">
-<input id="cmd-input" placeholder="Type command..." onkeydown="if(event.key==='Enter')sendCmd()">
-<button onclick="sendCmd()">Send</button>
-</div>
 </section>
 
 <section id="serial">
 <div class="serial-bar">
-<select id="baud" onchange="setBaud()">
+<select id="baud">
 <option>9600</option><option>19200</option><option>38400</option>
 <option>57600</option><option selected>115200</option><option>230400</option>
 </select>
@@ -90,61 +154,226 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 <option value="">None</option>
 </select>
 <label class="chk"><input type="checkbox" id="echo" checked>Echo</label>
-<button onclick="document.getElementById('serial-output').textContent=''">Clear</button>
+<button id="serial-clear">Clear</button>
 </div>
 <div id="serial-output"></div>
 <div class="cmd-bar">
-<input id="serial-input" placeholder="Send over UART..." onkeydown="if(event.key==='Enter')sendSerial()">
-<button onclick="sendSerial()">Send</button>
+<input id="serial-input" placeholder="Send over UART...">
+<button id="serial-send">Send</button>
 </div>
 </section>
 
 <section id="settings">
 <div class="card">
 <h2>WiFi</h2>
-<div class="field"><label>SSID</label><input id="wifi-ssid"></div>
-<div class="field"><label>Password</label><input id="wifi-pass" type="password"></div>
-<button class="save-btn" onclick="saveWifi()">Save &amp; Connect</button>
+<div class="field"><label>SSID</label><input id="wifi-ssid" maxlength="32"></div>
+<div class="field"><label>Password</label><input id="wifi-pass" type="password" maxlength="63"></div>
+<button class="save-btn" id="save-wifi">Save &amp; Connect</button>
+<div class="note">Saved immediately; the connection is attempted in the background.
+Watch the WiFi row on the Status tab for the result.</div>
 </div>
 <div class="card">
 <h2>Setup Access Point</h2>
 <div class="row"><span class="label">SSID</span><span id="ap-ssid">--</span></div>
-<div class="field"><label>Password (8+ chars, blank for open)</label><input id="ap-pass" type="password"></div>
-<button class="save-btn" onclick="saveAp()">Save</button>
+<div class="field"><label>Passphrase (8-63 characters)</label><input id="ap-pass" type="password" maxlength="63"></div>
+<button class="save-btn" id="save-ap">Save</button>
 </div>
 <div class="card">
 <h2>MQTT Broker</h2>
-<div class="field"><label>URI</label><input id="mqtt-uri" placeholder="mqtt://192.168.1.100"></div>
-<button class="save-btn" onclick="saveMqtt()">Save &amp; Connect</button>
+<div class="field"><label>URI</label><input id="mqtt-uri" maxlength="128" placeholder="mqtt://homeassistant.local:1883"></div>
+<button class="save-btn" id="save-mqtt">Save &amp; Connect</button>
+</div>
+<div class="card">
+<h2>Firmware Update</h2>
+<div class="note">Downloads over HTTPS and reboots into the new image. Images are
+not signed, so the device installs whatever the URL serves - point it only at a
+build you made.</div>
+<div class="field"><label>Image URL</label><input id="ota-url" maxlength="256" placeholder="https://.../neato-mqtt-controller.bin"></div>
+<button class="warn-btn" id="start-ota">Update firmware</button>
+</div>
+<div class="card">
+<h2>Session</h2>
+<button class="plain-btn" id="logout">Sign out</button>
 </div>
 </section>
+</div>
 
 <script>
 const MAX_LINES=500;
-let ws;
+const MAX_SERIAL_CHARS=20000;
+let ws=null;
 let baudSynced=false;
+let pollTimer=null;
+let setupMode=false;
 
-function tab(id){
-  document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));
-  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-  event.target.classList.add('active');
+/* Where the device says it can be reached. Filled from /api/auth rather than
+   written into this page, so there is exactly one place that knows the access
+   point's address and it is the code that configures it. */
+let setupHost='';
+let setupAddr='';
+
+function $(id){return document.getElementById(id)}
+
+/* Prefers the name: inside a sign-in window location.host is whatever hostname
+   the connectivity probe asked for, and a browser can hold a cached redirect
+   for a numeric address it has met before but not for a name it has not. */
+function whereToGo(){
+  if(setupHost) return 'http://'+setupHost+(setupAddr?' (or http://'+setupAddr+')':'');
+  if(setupAddr) return 'http://'+setupAddr;
+  return 'this device';
 }
 
+/* --- Session gate --- */
+
+function stopLive(){
+  if(ws){ws.onclose=null;ws.close();ws=null}
+  if(pollTimer){clearInterval(pollTimer);pollTimer=null}
+}
+
+function showDone(){
+  stopLive();
+  $('boot').style.display='none';
+  $('gate').style.display='none';
+  $('app').style.display='none';
+  $('done-where').textContent='Open '+whereToGo()+' in an ordinary browser.';
+  $('done').style.display='block';
+}
+
+function showGate(setup){
+  setupMode=setup;
+  stopLive();
+  $('boot').style.display='none';
+  $('done').style.display='none';
+  $('app').style.display='none';
+  $('gate').style.display='block';
+  $('gate-title').textContent=setup?'Set up this device':'Sign in';
+  $('gate-submit').textContent=setup?'Save and continue':'Sign in';
+  $('setup-note').style.display=setup?'block':'none';
+  $('gate-confirm-field').style.display=setup?'block':'none';
+  $('gate-ap-field').style.display=setup?'block':'none';
+  $('gate-pass').setAttribute('autocomplete',setup?'new-password':'current-password');
+  $('gate-err').textContent='';
+  $('gate-pass').value='';$('gate-confirm').value='';$('gate-ap').value='';
+
+  /* Only worth saying while the setup network is up; on the LAN the browser is
+     already at the right place. */
+  $('gate-addr').textContent=(setupHost||setupAddr)
+    ? 'If this opened in a sign-in window, the full interface is at '
+      +whereToGo()+' in an ordinary browser.'
+    : '';
+
+  $('gate-pass').focus();
+}
+
+function showApp(){
+  $('boot').style.display='none';
+  $('gate').style.display='none';
+  $('done').style.display='none';
+  $('app').style.display='block';
+  connect();
+  refreshStatus();
+  if(!pollTimer) pollTimer=setInterval(refreshStatus,3000);
+}
+
+/* Every response is checked for a 401: sessions expire, and the device
+   restarting drops all of them, so any request can be the one that finds out. */
+function post(url,body){
+  return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)}).then(r=>{
+      if(r.status===401){showGate(false);return Promise.reject(new Error('signed out'))}
+      return r.json().catch(()=>({ok:r.ok}));
+    });
+}
+
+function submitGate(){
+  const pass=$('gate-pass').value;
+  $('gate-err').textContent='';
+
+  if(setupMode){
+    if(pass.length<8){$('gate-err').textContent='Password must be at least 8 characters';return}
+    if(pass!==$('gate-confirm').value){$('gate-err').textContent='Passwords do not match';return}
+    if($('gate-ap').value.length<8){$('gate-err').textContent='Recovery passphrase must be at least 8 characters';return}
+    fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password:pass,ap_password:$('gate-ap').value})})
+      .then(r=>r.json().catch(()=>({})))
+      /* Not showApp(): setting the password is what tells the device to stop
+         holding clients captive, so this window is about to close. Land on the
+         completion screen and let it. */
+      .then(j=>{if(j.ok)showDone();else $('gate-err').textContent=j.error||'Setup failed'})
+      .catch(()=>{$('gate-err').textContent='Could not reach the device'});
+    return;
+  }
+
+  fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({password:pass})})
+    .then(r=>r.json().catch(()=>({})))
+    .then(j=>{if(j.ok)showApp();else $('gate-err').textContent=j.error||'Sign in failed'})
+    .catch(()=>{$('gate-err').textContent='Could not reach the device'});
+}
+
+/* Keeps trying, but says so on screen each time rather than retrying invisibly.
+   Backs off to 10s so a device that is genuinely gone is not hammered. */
+let bootAttempt=0;
+let bootTimer=null;
+
+function boot(){
+  if(bootTimer){clearTimeout(bootTimer);bootTimer=null}
+  bootAttempt++;
+  $('boot').style.display='block';
+  $('boot-retry').style.display='none';
+  $('boot-title').textContent=bootAttempt>1
+    ? 'Contacting the device… (attempt '+bootAttempt+')'
+    : 'Contacting the device…';
+
+  fetch('/api/auth',{cache:'no-store'}).then(r=>{
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return r.json();
+  }).then(a=>{
+    bootAttempt=0;
+    setupHost=a.setup_hostname||'';
+    setupAddr=a.setup_address||'';
+    if(a.setup_required) showGate(true);
+    else if(a.authenticated) showApp();
+    else showGate(false);
+  }).catch(e=>{
+    $('boot-title').textContent='Cannot reach the device';
+    $('boot-note').textContent='The page loaded but /api/auth failed ('+e.message
+      +'). Still retrying. If you are on the setup network, check you are still '
+      +'joined to it — a phone or laptop will leave a network it thinks has no internet.';
+    $('boot-retry').style.display='inline-block';
+    const delay=Math.min(2000*bootAttempt,10000);
+    bootTimer=setTimeout(boot,delay);
+  });
+}
+
+/* --- Tabs --- */
+
+function tab(id,button){
+  document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  $(id).classList.add('active');
+  button.classList.add('active');
+}
+
+/* --- WebSocket --- */
+
 function connect(){
-  ws=new WebSocket('ws://'+location.host+'/ws');
+  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
   ws.onmessage=e=>{
-    const m=JSON.parse(e.data);
+    let m;
+    try{m=JSON.parse(e.data)}catch(_){return}
     if(m.type==='log') appendLog(m.data);
     else if(m.type==='serial') appendSerial(m.data);
-    else if(m.type==='console_out') appendLog('[exit: '+m.ret+']');
   };
-  ws.onclose=()=>setTimeout(connect,2000);
-  ws.onerror=()=>ws.close();
+  /* The device refuses the upgrade without a session and closes the socket, so
+     a reconnect loop here would spin against a signed-out device. Reconnect
+     only while the interface is up. */
+  ws.onclose=()=>{ws=null;if($('app').style.display!=='none')setTimeout(connect,2000)};
+  ws.onerror=()=>{if(ws)ws.close()};
 }
 
 function appendLog(text){
-  const el=document.getElementById('log-output');
+  const el=$('log-output');
   const d=document.createElement('div');
   d.textContent=text;
   el.appendChild(d);
@@ -152,19 +381,8 @@ function appendLog(text){
   el.scrollTop=el.scrollHeight;
 }
 
-function sendCmd(){
-  const input=document.getElementById('cmd-input');
-  const c=input.value.trim();
-  if(!c||!ws||ws.readyState!==1) return;
-  appendLog('> '+c);
-  ws.send(JSON.stringify({type:'console_in',cmd:c}));
-  input.value='';
-}
-
-const MAX_SERIAL_CHARS=20000;
-
 function appendSerial(text){
-  const el=document.getElementById('serial-output');
+  const el=$('serial-output');
   const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<20;
   el.textContent+=text;
   // Trim from the front so a chatty device cannot grow the page without bound.
@@ -174,78 +392,132 @@ function appendSerial(text){
 }
 
 function sendSerial(){
-  const input=document.getElementById('serial-input');
+  const input=$('serial-input');
   const text=input.value;
   if(!ws||ws.readyState!==1) return;
-  const eol=document.getElementById('eol').value
-    .replace('\\r','\r').replace('\\n','\n');
+  const eol=$('eol').value.replace('\\r','\r').replace('\\n','\n');
   ws.send(JSON.stringify({type:'serial_in',data:text+eol}));
   // Local echo, since a loopback or a silent device may not echo back.
-  if(document.getElementById('echo').checked) appendSerial(text+'\n');
+  if($('echo').checked) appendSerial(text+'\n');
   input.value='';
 }
 
-function setBaud(){
-  fetch('/api/serial',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({baud:parseInt(document.getElementById('baud').value,10)})})
-    .then(r=>r.json()).then(j=>{if(!j.ok)alert(j.error||'Failed')});
+/* --- Actions --- */
+
+function report(j,okMessage){
+  if(j&&j.ok){if(okMessage)alert(okMessage)}
+  else alert((j&&j.error)||'Failed');
 }
 
+function setBaud(){
+  post('/api/serial',{baud:parseInt($('baud').value,10)}).then(j=>report(j)).catch(()=>{});
+}
+
+/* Checked, unlike before: a rejected command used to look identical to one that
+   worked. */
 function cmd(action){
-  fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({command:action})});
+  post('/api/command',{command:action}).then(j=>{if(!j.ok)report(j)}).catch(()=>{});
 }
 
 function saveWifi(){
-  fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({ssid:document.getElementById('wifi-ssid').value,
-      password:document.getElementById('wifi-pass').value})})
-    .then(r=>r.json()).then(j=>{if(!j.ok)alert(j.error||'Failed')});
+  post('/api/wifi',{ssid:$('wifi-ssid').value,password:$('wifi-pass').value})
+    .then(j=>{if(j.ok){$('wifi-pass').value='';alert('Saved. Connecting in the background.')}
+              else report(j)}).catch(()=>{});
 }
 
 function saveAp(){
-  fetch('/api/ap',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({password:document.getElementById('ap-pass').value})})
-    .then(r=>r.json()).then(j=>{
-      if(!j.ok)alert(j.error||'Failed');
-      else{document.getElementById('ap-pass').value='';alert('Saved. Applies next time the AP starts.')}
-    });
+  post('/api/ap',{password:$('ap-pass').value})
+    .then(j=>{if(j.ok){$('ap-pass').value='';alert('Saved. Applies next time the AP starts.')}
+              else report(j)}).catch(()=>{});
 }
 
 function saveMqtt(){
-  fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({uri:document.getElementById('mqtt-uri').value})})
-    .then(r=>r.json()).then(j=>{if(!j.ok)alert(j.error||'Failed')});
+  post('/api/mqtt',{uri:$('mqtt-uri').value}).then(j=>report(j)).catch(()=>{});
+}
+
+function startOta(){
+  const url=$('ota-url').value.trim();
+  if(!url) return;
+  if(!confirm('Install firmware from '+url+' and reboot?')) return;
+  post('/api/ota',{url:url})
+    .then(j=>{if(j.ok)alert('Downloading. Watch the Log tab; the device reboots when done.')
+              else report(j)}).catch(()=>{});
+}
+
+function logout(){
+  post('/api/logout',{}).then(()=>showGate(false)).catch(()=>showGate(false));
+}
+
+/* --- Status --- */
+
+/* textContent and classList throughout. These two rows used to be assembled as
+   HTML strings around the SSID and the broker URI, neither of which the device
+   chooses. */
+function setDot(el,on,text){
+  el.textContent='';
+  const dot=document.createElement('span');
+  dot.className='status-dot '+(on?'dot-on':'dot-off');
+  el.appendChild(dot);
+  el.appendChild(document.createTextNode(text));
 }
 
 function refreshStatus(){
-  fetch('/api/status').then(r=>r.json()).then(s=>{
-    document.getElementById('v-state').textContent=s.vacuum.state;
-    document.getElementById('v-battery').textContent=s.vacuum.battery+'%';
+  fetch('/api/status').then(r=>{
+    if(r.status===401){showGate(false);return Promise.reject(new Error('signed out'))}
+    return r.json();
+  }).then(s=>{
+    $('v-state').textContent=s.vacuum.state;
+    $('v-battery').textContent=s.vacuum.battery+'%';
+
     const wd=s.wifi.connected;
-    document.getElementById('w-status').innerHTML=
-      '<span class="status-dot '+(wd?'dot-on':'dot-off')+'"></span>'+(wd?s.wifi.ssid:'Disconnected');
+    setDot($('w-status'),wd,wd?(s.wifi.ssid||'Connected'):(s.wifi.state||'Disconnected'));
+    $('w-rssi').textContent=s.wifi.rssi?s.wifi.rssi+' dBm':'--';
+
     if(s.ap){
-      document.getElementById('ap-ssid').textContent=s.ap.ssid||'not started yet';
-      document.getElementById('ap-row').style.display=s.ap.active?'flex':'none';
-      if(s.ap.active) document.getElementById('ap-status').innerHTML=
-        '<span class="status-dot dot-on"></span>'+(s.ap.ssid||'active');
+      $('ap-ssid').textContent=s.ap.ssid||'not started yet';
+      $('ap-row').style.display=s.ap.active?'flex':'none';
+      $('setup-ap-name').textContent=s.ap.ssid||'setup';
+      if(s.ap.active) setDot($('ap-status'),true,s.ap.ssid||'active');
+      $('ap-warning').style.display=s.ap.password_is_default?'block':'none';
     }
+
     const md=s.mqtt.connected;
-    document.getElementById('m-status').innerHTML=
-      '<span class="status-dot '+(md?'dot-on':'dot-off')+'"></span>'+(md?(s.mqtt.broker||'Connected'):'Disconnected');
-    if(s.firmware) document.getElementById('fw').textContent=
+    setDot($('m-status'),md,md?(s.mqtt.broker||'Connected'):'Disconnected');
+    if(s.mqtt.broker) $('mqtt-uri').placeholder=s.mqtt.broker;
+
+    if(s.firmware) $('fw').textContent=
       s.firmware.version+(s.firmware.partition?' ('+s.firmware.partition+')':'');
-    document.getElementById('heap').textContent=s.heap_free+' bytes';
-    if(s.mqtt.broker) document.getElementById('mqtt-uri').placeholder=s.mqtt.broker;
+    $('heap').textContent=s.heap_free+' bytes';
+
     // Adopt the device's rate once, so polling cannot fight the user's choice.
-    if(s.serial&&!baudSynced){document.getElementById('baud').value=s.serial.baud;baudSynced=true}
+    if(s.serial&&!baudSynced){$('baud').value=s.serial.baud;baudSynced=true}
   }).catch(()=>{});
 }
 
-connect();
-refreshStatus();
-setInterval(refreshStatus,3000);
+/* --- Wiring --- */
+
+document.querySelectorAll('nav button').forEach(b=>{
+  b.addEventListener('click',()=>tab(b.dataset.tab,b));
+});
+document.querySelectorAll('[data-cmd]').forEach(b=>{
+  b.addEventListener('click',()=>cmd(b.dataset.cmd));
+});
+$('boot-retry').addEventListener('click',()=>{bootAttempt=0;boot()});
+$('gate-submit').addEventListener('click',submitGate);
+$('gate-pass').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
+$('gate-confirm').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
+$('gate-ap').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
+$('baud').addEventListener('change',setBaud);
+$('serial-clear').addEventListener('click',()=>{$('serial-output').textContent=''});
+$('serial-send').addEventListener('click',sendSerial);
+$('serial-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendSerial()});
+$('save-wifi').addEventListener('click',saveWifi);
+$('save-ap').addEventListener('click',saveAp);
+$('save-mqtt').addEventListener('click',saveMqtt);
+$('start-ota').addEventListener('click',startOta);
+$('logout').addEventListener('click',logout);
+
+boot();
 </script>
 </body>
 </html>
