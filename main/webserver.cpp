@@ -1348,9 +1348,9 @@ std::optional<std::string> WebServer::read_body(httpd_req_t* req)
     // Checked before anything is allocated. content_len is the client's
     // Content-Length header verbatim and the server imposes no cap of its own,
     // so a sixty-byte request with no body at all could otherwise ask for a
-    // megabyte - and with exceptions enabled and no handler anywhere in the
-    // tree, a failed allocation is std::terminate, which is a panic reboot on
-    // the device's only management interface.
+    // megabyte - and a failed allocation aborts, which is a panic reboot on the
+    // device's only management interface. Capping the request is the defence;
+    // there is nothing to catch afterwards.
     if (req->content_len > MAX_BODY_BYTES) {
         send_status(req, "413 Content Too Large", "Body too large");
         return std::nullopt;

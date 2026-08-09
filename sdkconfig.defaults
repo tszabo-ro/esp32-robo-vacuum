@@ -2,8 +2,15 @@
 CONFIG_IDF_TARGET="esp32c3"
 
 # C++ Configuration
-CONFIG_COMPILER_CXX_EXCEPTIONS=y
-CONFIG_COMPILER_CXX_RTTI=y
+#
+# Both off, because neither is used: there is no try, catch, dynamic_cast or
+# typeid anywhere in main/. Leaving them on cost flash and RAM for unwinding
+# tables and type information that nothing reads, and bought nothing - an
+# allocation failure ends in std::terminate with exceptions on and in abort with
+# them off, which is the same reboot either way. The code that matters guards
+# against that by capping what it allocates rather than by catching afterwards.
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
 
 # FreeRTOS
 CONFIG_FREERTOS_HZ=1000

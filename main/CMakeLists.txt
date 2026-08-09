@@ -39,8 +39,12 @@ idf_component_register(
 # Set C++ standard for this component
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_20)
 
-# Enable warnings
+# Warnings are errors here, and only here: the IDF's own components are built
+# with their own settings and are not this project's to fix. CI used to grep the
+# build log for "warning:" instead, which checks a string in a log rather than
+# the thing itself, and passes happily if the log format ever changes.
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wall
     -Wextra
+    -Werror
 )

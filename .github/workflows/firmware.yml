@@ -35,23 +35,15 @@ jobs:
         # produce the same image. Building from a clean checkout is also the
         # point: it catches settings that exist only in a developer's local
         # (gitignored) sdkconfig and were never recorded in sdkconfig.defaults.
+        #
+        # Warnings are errors in main/CMakeLists.txt, so a warning fails this
+        # step. This used to be a grep for "warning:" over the build log, which
+        # tested the log's wording rather than the build.
         run: |
           set -eo pipefail
           docker run --rm -v "$PWD:/project" -w /project \
             espressif/idf:release-v5.3 \
-            sh -c 'git config --global --add safe.directory /project && idf.py build' \
-            2>&1 | tee build.log
-
-      - name: Fail on compiler warnings
-        # Agents.md treats a warning-free build as non-negotiable, so enforce it
-        # here rather than relying on someone noticing in scrollback.
-        run: |
-          if grep -q "warning:" build.log; then
-            echo "::error::Build produced compiler warnings"
-            grep "warning:" build.log
-            exit 1
-          fi
-          echo "No compiler warnings."
+            sh -c 'git config --global --add safe.directory /project && idf.py build'
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
