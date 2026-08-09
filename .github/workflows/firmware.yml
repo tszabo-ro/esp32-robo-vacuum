@@ -21,6 +21,15 @@ jobs:
           # `git describe` matches the release tag instead of falling back.
           fetch-depth: 0
 
+      - name: Host tests
+        # Run first: they need no toolchain and no hardware, so a broken parser
+        # fails in seconds rather than after a full firmware build.
+        run: |
+          set -eo pipefail
+          cmake -S test -B build-test
+          cmake --build build-test
+          ctest --test-dir build-test --output-on-failure
+
       - name: Build firmware
         # Same IDF release as the local Dockerfile, so CI and desktop builds
         # produce the same image. Building from a clean checkout is also the

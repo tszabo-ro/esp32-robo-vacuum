@@ -13,11 +13,18 @@ MINITERM ?= uvx --from pyserial pyserial-miniterm
 NVS_OFFSET = $(shell awk -F, '/^[[:space:]]*nvs[[:space:]]*,/ {gsub(/[[:space:]]/,"",$$4); print $$4; exit}' partitions.csv)
 NVS_SIZE   = $(shell awk -F, '/^[[:space:]]*nvs[[:space:]]*,/ {gsub(/[[:space:]]/,"",$$5); print $$5; exit}' partitions.csv)
 
-.PHONY: build shell flash monitor erase clear-nvs require-device
+.PHONY: build test shell flash monitor erase clear-nvs require-device
 
 # Build the project in Docker (no serial port needed)
 build:
 	docker compose run --rm esp-idf idf.py build
+
+# Host tests for the platform-free parsers. No Docker and no board, so there is
+# no excuse not to run them: see test/CMakeLists.txt.
+test:
+	cmake -S test -B build-test
+	cmake --build build-test
+	ctest --test-dir build-test --output-on-failure
 
 # Open an interactive shell in the container
 shell:
