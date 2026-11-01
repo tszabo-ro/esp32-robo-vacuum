@@ -1,11 +1,11 @@
 #include "robot.h"
 
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string_view>
 #include "esp_log.h"
 #include "freertos/task.h"
+#include "robot_response.h"
 
 namespace {
 constexpr const char* TAG = "robot";
@@ -79,32 +79,18 @@ bool NeatoRobot::poll_once()
     char robot_state[sizeof(status_.state)];
     if (!exchange("GetState", response, sizeof(response)))
         return false;
-
-    const char* state = std::strstr(response, "Current Robot State is:");
-    if (!state) return false;
-    state += std::strlen("Current Robot State is:");
-    while (*state == ' ' || *state == '\t') ++state;
-    const char* state_end = std::strpbrk(state, "\r\n");
-    const size_t state_len = state_end ? static_cast<size_t>(state_end - state)
-                                       : std::strlen(state);
-    if (state_len == 0 || state_len >= sizeof(robot_state)) return false;
-    std::memcpy(robot_state, state, state_len);
-    robot_state[state_len] = '\0';
+    if (!robot_response::parse_state(response, robot_state, sizeof(robot_state))) return false;
 
     vTaskDelay(pdMS_TO_TICKS(50));
     if (!exchange("GetCharger", response, sizeof(response)))
         return false;
 
-    const char* fuel = std::strstr(response, "FuelPercent,");
-    if (!fuel) return false;
-    fuel += std::strlen("FuelPercent,");
-    char* number_end = nullptr;
-    long battery = std::strtol(fuel, &number_end, 10);
-    if (number_end == fuel || battery < 0 || battery > 100) return false;
+    int battery = 0;
+    if (!robot_response::parse_battery_percent(response, battery)) return false;
 
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    std::memcpy(status_.state, robot_state, state_len + 1);
-    status_.battery_percent = static_cast<int>(battery);
+    std::strcpy(status_.state, robot_state);
+    status_.battery_percent = battery;
     status_.available = true;
     last_update_ = xTaskGetTickCount();
     xSemaphoreGive(mutex_);

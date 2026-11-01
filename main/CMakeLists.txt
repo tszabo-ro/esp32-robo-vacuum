@@ -14,6 +14,8 @@ idf_component_register(
         "serial.cpp"
         "serial_console.cpp"
         "robot.cpp"
+        "robot_response.cpp"
+        "firmware_version.cpp"
         "factory_reset.cpp"
     INCLUDE_DIRS "."
     REQUIRES

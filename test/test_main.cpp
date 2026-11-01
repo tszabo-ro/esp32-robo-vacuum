@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "dns_message.h"
+#include "firmware_version.h"
+#include "robot_response.h"
 #include "text_util.h"
 
 namespace {
@@ -371,6 +373,78 @@ void test_dns_no_room_for_answer()
     CHECK(read16(buf.data() + 6) == 0);  // and no answer claimed
 }
 
+// --- Firmware version parsing and comparison ---
+
+void test_firmware_versions()
+{
+    std::printf("firmware_version\n");
+    firmware_version::Version version = {};
+
+    CHECK(firmware_version::parse_release_tag("v0.2.1", version));
+    CHECK(version.major == 0 && version.minor == 2 && version.patch == 1);
+    CHECK(firmware_version::parse_release_tag("v12.34.56", version));
+    CHECK(version.major == 12 && version.minor == 34 && version.patch == 56);
+
+    CHECK(!firmware_version::parse_release_tag("0.2.1", version));
+    CHECK(!firmware_version::parse_release_tag("v0.2", version));
+    CHECK(!firmware_version::parse_release_tag("v0.2.1-rc1", version));
+    CHECK(!firmware_version::parse_release_tag("v4294967296.0.0", version));
+
+    CHECK(firmware_version::parse_running_version("v0.2.1", version));
+    CHECK(version.major == 0 && version.minor == 2 && version.patch == 1);
+    CHECK(firmware_version::parse_running_version("v0.2.1-27-ge718afd-dirty", version));
+    CHECK(version.major == 0 && version.minor == 2 && version.patch == 1);
+    CHECK(firmware_version::parse_running_version("v0.2.1-dirty", version));
+    CHECK(!firmware_version::parse_running_version("v0.2.1-27-g", version));
+    CHECK(!firmware_version::parse_running_version("v0.2.1-xx-gabcdef0", version));
+    CHECK(!firmware_version::parse_running_version("v0.2.1-1-gabcz123", version));
+    CHECK(!firmware_version::parse_running_version("v0.2.1-extra", version));
+
+    const firmware_version::Version current{1, 9, 12};
+    CHECK(firmware_version::is_newer({2, 0, 0}, current));
+    CHECK(firmware_version::is_newer({1, 10, 0}, current));
+    CHECK(firmware_version::is_newer({1, 9, 13}, current));
+    CHECK(!firmware_version::is_newer({1, 9, 12}, current));
+    CHECK(!firmware_version::is_newer({1, 9, 11}, current));
+}
+
+// --- Neato status response parsing ---
+
+void test_robot_response_parsing()
+{
+    std::printf("robot_response\n");
+    char state[32];
+
+    CHECK(robot_response::parse_state(
+        "Current UI State is: UIMGR_STATE_STANDBY\r\nCurrent Robot State is: ST_C_Standby\r\n",
+        state, sizeof(state)));
+    CHECK_STR(state, "ST_C_Standby");
+    CHECK(robot_response::parse_state("Current Robot State is:\tST_C_Cleaning", state, sizeof(state)));
+    CHECK_STR(state, "ST_C_Cleaning");
+
+    CHECK(!robot_response::parse_state("Current UI State is: UIMGR_STATE_STANDBY", state, sizeof(state)));
+    CHECK(!robot_response::parse_state("Current Robot State is: ", state, sizeof(state)));
+    CHECK(!robot_response::parse_state("Current Robot State is: STATE-WITH-DASH", state, sizeof(state)));
+    CHECK(!robot_response::parse_state("Current Robot State is: ST_C_Standby", state, 4));
+    CHECK(state[0] == '\0');
+    CHECK(!robot_response::parse_state("Current Robot State is: ST_C_Standby", nullptr, sizeof(state)));
+
+    int battery = -1;
+    CHECK(robot_response::parse_battery_percent("FuelPercent,53 BatteryOverTemp,0", battery));
+    CHECK(battery == 53);
+    CHECK(robot_response::parse_battery_percent("Charger data\r\nFuelPercent,100,\r\n", battery));
+    CHECK(battery == 100);
+    CHECK(robot_response::parse_battery_percent("FuelPercent,0", battery));
+    CHECK(battery == 0);
+
+    CHECK(!robot_response::parse_battery_percent("BatteryPercent,53", battery));
+    CHECK(!robot_response::parse_battery_percent("FuelPercent,", battery));
+    CHECK(!robot_response::parse_battery_percent("FuelPercent,-1", battery));
+    CHECK(!robot_response::parse_battery_percent("FuelPercent,101", battery));
+    CHECK(!robot_response::parse_battery_percent("FuelPercent,53abc", battery));
+    CHECK(!robot_response::parse_battery_percent("FuelPercent,999999999999999", battery));
+}
+
 }  // namespace
 
 int main()
@@ -384,6 +458,8 @@ int main()
     test_dns_wrong_question_type();
     test_dns_malformed();
     test_dns_no_room_for_answer();
+    test_firmware_versions();
+    test_robot_response_parsing();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
