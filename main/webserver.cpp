@@ -8,6 +8,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <string>
 #include <string_view>
@@ -1243,17 +1244,19 @@ void WebServer::enqueue_ws(const char* json)
         if (ws_clients_.empty()) return;
     }
 
-    auto* copy = new (std::nothrow) std::string(json);
+    std::unique_ptr<std::string> copy(new (std::nothrow) std::string(json));
     if (!copy) return;
+    std::string* queued = copy.get();
 
     // Dropped rather than blocked, and this is the whole reason the queue
     // exists. The producers are draining the UART and the log hook; making
     // either of them wait on a browser that stopped reading would overrun the
     // UART's receive buffer and stall every task that logs.
-    if (xQueueSend(ws_tx_queue_, &copy, 0) != pdTRUE) {
-        delete copy;
+    if (xQueueSend(ws_tx_queue_, &queued, 0) != pdTRUE) {
         ws_dropped_++;
+        return;
     }
+    copy.release();
 }
 
 // The one task allowed to call the server's WebSocket API from outside the HTTP
@@ -1269,12 +1272,12 @@ void WebServer::ws_tx_task(void* arg)
     auto* self = static_cast<WebServer*>(arg);
 
     while (true) {
-        std::string* msg = nullptr;
-        if (xQueueReceive(self->ws_tx_queue_, &msg, portMAX_DELAY) != pdTRUE) continue;
+        std::string* raw_msg = nullptr;
+        if (xQueueReceive(self->ws_tx_queue_, &raw_msg, portMAX_DELAY) != pdTRUE) continue;
+        std::unique_ptr<std::string> msg(raw_msg);
         if (!msg) continue;
 
         self->deliver_ws(*msg);
-        delete msg;
     }
 }
 

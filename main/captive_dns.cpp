@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <lwip/sockets.h>
 #include "esp_log.h"
@@ -28,7 +29,7 @@ struct DnsTaskContext {
 // The task owns its context and closes its own socket when it exits. A stop
 // only shuts the socket down, so its descriptor cannot be reused underneath an
 // old task that is still unwinding.
-DnsTaskContext* s_context = nullptr;
+std::unique_ptr<DnsTaskContext> s_context;
 SemaphoreHandle_t s_mutex = xSemaphoreCreateMutex();
 
 // Given by the task on its way out, so a stop can wait for it. The task gives
@@ -81,9 +82,8 @@ void dns_task(void* arg)
     if (s_exited) xSemaphoreGive(s_exited);
     {
         Lock lock(s_mutex);
-        if (s_context == context) s_context = nullptr;
+        if (s_context.get() == context) s_context.reset();
     }
-    delete context;
     vTaskDelete(nullptr);
 }
 
@@ -117,13 +117,13 @@ esp_err_t captive_dns_start(uint32_t ipv4_addr)
     // satisfied by the wrong task's exit.
     if (s_exited) xSemaphoreTake(s_exited, 0);
 
-    auto* context = new (std::nothrow) DnsTaskContext;
+    std::unique_ptr<DnsTaskContext> context(new (std::nothrow) DnsTaskContext);
     if (!context) return ESP_ERR_NO_MEM;
     context->answer_addr = ipv4_addr;
     context->socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (context->socket < 0) {
         ESP_LOGE(TAG, "Could not create the DNS socket: errno %d", errno);
-        delete context;
+        context.reset();
         return ESP_FAIL;
     }
 
@@ -135,16 +135,15 @@ esp_err_t captive_dns_start(uint32_t ipv4_addr)
     if (bind(context->socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         ESP_LOGE(TAG, "Could not bind port 53: errno %d", errno);
         close(context->socket);
-        delete context;
+        context.reset();
         return ESP_FAIL;
     }
 
-    s_context = context;
-    if (xTaskCreate(dns_task, "captive_dns", 3072, context, 5, nullptr) != pdPASS) {
+    s_context = std::move(context);
+    if (xTaskCreate(dns_task, "captive_dns", 3072, s_context.get(), 5, nullptr) != pdPASS) {
         ESP_LOGE(TAG, "Could not start the DNS task");
         close(s_context->socket);
-        s_context = nullptr;
-        delete context;
+        s_context.reset();
         return ESP_ERR_NO_MEM;
     }
 
