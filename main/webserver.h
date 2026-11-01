@@ -17,11 +17,12 @@
 #include "vacuum.h"
 #include "mqtt.h"
 #include "ota.h"
-#include "serial.h"
+#include "serial_console.h"
+#include "robot.h"
 
 class WebServer {
 public:
-    WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialPort& serial, OtaUpdater& ota);
+    WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialConsole& serial, NeatoRobot& robot, OtaUpdater& ota);
     esp_err_t start();
 
 private:
@@ -38,6 +39,7 @@ private:
     static esp_err_t handle_post_serial(httpd_req_t* req);
     static esp_err_t handle_post_ap(httpd_req_t* req);
     static esp_err_t handle_post_command(httpd_req_t* req);
+    static esp_err_t handle_post_robot_command(httpd_req_t* req);
     static esp_err_t handle_post_ota(httpd_req_t* req);
     static esp_err_t handle_ws(httpd_req_t* req);
 
@@ -139,7 +141,7 @@ private:
 
     static void ws_tx_task(void* arg);
     static void log_broadcast_task(void* arg);
-    static void serial_broadcast_task(void* arg);
+    static void serial_data(void* context, const char* data, size_t length);
 
     // Reads the whole body, or answers the request and returns nothing. A
     // std::optional rather than an empty string because "too large" and
@@ -164,7 +166,8 @@ private:
 
     Vacuum& vacuum_;
     MqttClient& mqtt_;
-    SerialPort& serial_;
+    SerialConsole& serial_;
+    NeatoRobot& robot_;
     OtaUpdater& ota_;
     httpd_handle_t server_ = nullptr;
 
@@ -174,7 +177,6 @@ private:
     StreamBufferHandle_t log_stream_;
     QueueHandle_t ws_tx_queue_;
     TaskHandle_t log_task_ = nullptr;
-    TaskHandle_t serial_task_ = nullptr;
     TaskHandle_t ws_tx_task_ = nullptr;
 
     // Reported by /api/status. Frames are dropped rather than blocking a

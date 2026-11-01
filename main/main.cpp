@@ -232,15 +232,21 @@ extern "C" void app_main()
     // app_main returns once setup is done, so these must outlive its stack.
     static Vacuum vacuum;
     static MqttClient mqtt(vacuum);
-    static SerialPort serial;
+    static SerialPort uart;
+    static SerialConsole serial(uart);
+    static NeatoRobot robot(serial);
     static OtaUpdater ota;
-    static WebServer web(vacuum, mqtt, serial, ota);
+    static WebServer web(vacuum, mqtt, serial, robot, ota);
     static NetworkServices services{mqtt, web};
 
     // Independent of WiFi, so the UART is live even with no network.
-    if (serial.start() != ESP_OK) {
+    if (uart.start() != ESP_OK) {
         ESP_LOGE(TAG, "Serial port failed to start");
     }
+    if (serial.start() != ESP_OK) {
+        ESP_LOGE(TAG, "Serial console failed to start");
+    }
+    robot.start();
 
     // Checked, like every other xTaskCreate in this tree. A task that silently
     // fails to start here is the worst case of the lot: net_svc not coming up

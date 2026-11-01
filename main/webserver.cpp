@@ -136,15 +136,19 @@ bool read_header(httpd_req_t* req, const char* field, std::string& out)
 
 }  // namespace
 
-WebServer::WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialPort& serial, OtaUpdater& ota)
+WebServer::WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialConsole& serial, NeatoRobot& robot, OtaUpdater& ota)
     : vacuum_(vacuum)
     , mqtt_(mqtt)
     , serial_(serial)
+    , robot_(robot)
     , ota_(ota)
     , clients_mutex_(xSemaphoreCreateMutex())
     , log_stream_(xStreamBufferCreate(4096, 1))
     , ws_tx_queue_(xQueueCreate(WS_TX_QUEUE_DEPTH, sizeof(std::string*)))
 {
+    if (!serial_.subscribe(serial_data, this)) {
+        ESP_LOGE(TAG, "Could not subscribe the web terminal to UART data");
+    }
     if (!clients_mutex_) ESP_LOGE(TAG, "Could not create the client mutex");
     if (!log_stream_) ESP_LOGE(TAG, "Could not create the log stream buffer");
     if (!ws_tx_queue_) ESP_LOGE(TAG, "Could not create the WebSocket send queue");
@@ -200,6 +204,7 @@ esp_err_t WebServer::start()
         {"/api/serial",   HTTP_POST, handle_post_serial,  false},
         {"/api/ap",       HTTP_POST, handle_post_ap,      false},
         {"/api/command",  HTTP_POST, handle_post_command, false},
+        {"/api/robot/command", HTTP_POST, handle_post_robot_command, false},
         {"/api/ota",      HTTP_POST, handle_post_ota,     false},
         {"/ws",           HTTP_GET,  handle_ws,           true},
     };
@@ -247,11 +252,6 @@ esp_err_t WebServer::start()
         log_task_ = nullptr;
         ESP_LOGE(TAG, "Could not start the log reader");
     }
-    if (xTaskCreate(serial_broadcast_task, "ws_serial", 4096, this, 5, &serial_task_) != pdPASS) {
-        serial_task_ = nullptr;
-        ESP_LOGE(TAG, "Could not start the serial reader");
-    }
-
     ESP_LOGI(TAG, "Web server started on port %d", config.server_port);
     return ESP_OK;
 }
@@ -803,6 +803,13 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     cJSON_AddStringToObject(vac, "state", Vacuum::state_to_string(state));
     cJSON_AddNumberToObject(vac, "battery", battery);
 
+    const RobotStatus robot_status = self->robot_.status();
+    cJSON* robot = cJSON_AddObjectToObject(root, "robot");
+    cJSON_AddBoolToObject(robot, "available", robot_status.available);
+    cJSON_AddStringToObject(robot, "state", robot_status.state);
+    cJSON_AddNumberToObject(robot, "battery", robot_status.battery_percent);
+    cJSON_AddNumberToObject(robot, "age_seconds", robot_status.age_seconds);
+
     // Reported over HTTP because the version is otherwise only visible in the
     // boot log. Once the robot is closed and updates arrive over the air, this
     // is the only way to confirm what is actually running.
@@ -949,6 +956,30 @@ esp_err_t WebServer::handle_post_command(httpd_req_t* req)
     if (!cmd) return bad_request(req, "Missing command");
 
     if (!self->vacuum_.command(cmd)) return bad_request(req, "Unknown command");
+    return send_json(req, R"({"ok":true})");
+}
+
+esp_err_t WebServer::handle_post_robot_command(httpd_req_t* req)
+{
+    if (!allow_session_json(req)) return refusal_result(req);
+    auto* self = static_cast<WebServer*>(req->user_ctx);
+    auto body = read_body(req);
+    if (!body) return refusal_result(req);
+    JsonDoc doc(cJSON_Parse(body->c_str()));
+    if (!doc) return bad_request(req, "Invalid JSON");
+
+    // This is an allowlist, not an arbitrary serial command endpoint. The
+    // protocol command is selected internally so network input cannot reach
+    // the UART as free-form text.
+    const char* action = string_field(doc.get(), "command", 8);
+    if (!action || (std::strcmp(action, "start") != 0
+                    && std::strcmp(action, "spot") != 0
+                    && std::strcmp(action, "stop") != 0)) {
+        return bad_request(req, "Command must be start, spot or stop");
+    }
+    if (!self->robot_.command(action)) {
+        return send_status(req, "503 Service Unavailable", "Robot did not respond to the command");
+    }
     return send_json(req, R"({"ok":true})");
 }
 
@@ -1242,26 +1273,10 @@ void WebServer::deliver_ws(const std::string& msg)
 
 // --- Serial bridge ---
 
-void WebServer::serial_broadcast_task(void* arg)
+void WebServer::serial_data(void* context, const char* data, size_t length)
 {
-    auto* self = static_cast<WebServer*>(arg);
-    char buf[256];
-
-    while (true) {
-        // read() blocks only when the driver is installed. Startup tolerates a
-        // UART that failed to open, and without this the loop then spun at full
-        // speed at priority 5, starving the idle task into a watchdog reset on
-        // a device that is deliberately clocked down to save power.
-        if (!self->serial_.started()) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
-        }
-
-        size_t received = self->serial_.read(buf, sizeof(buf), 100);
-        if (received == 0) continue;
-
-        self->broadcast_typed("serial", text::escape_serial(buf, received).c_str());
-    }
+    auto* self = static_cast<WebServer*>(context);
+    self->broadcast_typed("serial", text::escape_serial(data, length).c_str());
 }
 
 // --- Log capture ---
