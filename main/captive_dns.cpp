@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstring>
+#include <new>
 #include <lwip/sockets.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -18,48 +19,71 @@ namespace {
 // before giving up on the handshake and logging it.
 constexpr uint32_t EXIT_TIMEOUT_MS = 1000;
 
-TaskHandle_t s_task = nullptr;
-int s_socket = -1;
-uint32_t s_answer_addr = 0;
-std::atomic<bool> s_running{false};
+struct DnsTaskContext {
+    int socket = -1;
+    uint32_t answer_addr = 0;
+    std::atomic<bool> running{true};
+};
 
-// Given by the task on its way out, so a stop can wait for it. Without this,
-// stop() released the descriptor while the task was still inside recvfrom, and
-// a quick restart could be handed the same descriptor number before the old
-// task had gone - two readers on one socket, and the old one clearing s_task
-// out from under the new one.
+// The task owns its context and closes its own socket when it exits. A stop
+// only shuts the socket down, so its descriptor cannot be reused underneath an
+// old task that is still unwinding.
+DnsTaskContext* s_context = nullptr;
+SemaphoreHandle_t s_mutex = xSemaphoreCreateMutex();
+
+// Given by the task on its way out, so a stop can wait for it. The task gives
+// it before publishing that its context is gone, so a new start cannot mistake
+// an old task's exit for the new task's exit.
 SemaphoreHandle_t s_exited = nullptr;
 
-void dns_task(void*)
+class Lock {
+public:
+    explicit Lock(SemaphoreHandle_t mutex) : mutex_(mutex)
+    {
+        if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
+    }
+    ~Lock() { if (mutex_) xSemaphoreGive(mutex_); }
+    Lock(const Lock&) = delete;
+    Lock& operator=(const Lock&) = delete;
+
+private:
+    SemaphoreHandle_t mutex_;
+};
+
+void dns_task(void* arg)
 {
+    auto* context = static_cast<DnsTaskContext*>(arg);
     uint8_t buf[dns::MAX_MESSAGE];
 
-    while (s_running) {
+    while (context->running) {
         sockaddr_in from = {};
         socklen_t from_len = sizeof(from);
 
-        const int received = recvfrom(s_socket, buf, sizeof(buf), 0,
+        const int received = recvfrom(context->socket, buf, sizeof(buf), 0,
                                       reinterpret_cast<sockaddr*>(&from), &from_len);
         if (received < 0) {
-            // The socket is closed from captive_dns_stop() to break this loop,
+            // The socket is shut down from captive_dns_stop() to break this loop,
             // so an error here is the normal way out.
-            if (!s_running) break;
+            if (!context->running) break;
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
         const size_t reply_len = dns::build_reply(buf, static_cast<size_t>(received),
-                                                  s_answer_addr);
+                                                  context->answer_addr);
         if (reply_len == 0) continue;
 
-        sendto(s_socket, buf, reply_len, 0,
+        sendto(context->socket, buf, reply_len, 0,
                reinterpret_cast<sockaddr*>(&from), from_len);
     }
 
-    // Published before the handshake, so a stop that is waiting on the
-    // semaphore never observes a handle belonging to a task that has gone.
-    s_task = nullptr;
+    close(context->socket);
     if (s_exited) xSemaphoreGive(s_exited);
+    {
+        Lock lock(s_mutex);
+        if (s_context == context) s_context = nullptr;
+    }
+    delete context;
     vTaskDelete(nullptr);
 }
 
@@ -67,7 +91,13 @@ void dns_task(void*)
 
 esp_err_t captive_dns_start(uint32_t ipv4_addr)
 {
-    if (s_running) return ESP_OK;
+    if (!s_mutex) return ESP_ERR_NO_MEM;
+    Lock lock(s_mutex);
+    if (s_context) {
+        // Do not start another task while the previous one is still unwinding:
+        // it still owns its descriptor, even after a timed-out stop.
+        return s_context->running ? ESP_OK : ESP_ERR_INVALID_STATE;
+    }
 
     // Bound to the access point's own address rather than to everything.
     // INADDR_ANY also picks up the station interface, so with the access point
@@ -79,8 +109,6 @@ esp_err_t captive_dns_start(uint32_t ipv4_addr)
         ESP_LOGE(TAG, "Refusing to start without an access point address");
         return ESP_ERR_INVALID_ARG;
     }
-    s_answer_addr = ipv4_addr;
-
     if (!s_exited) {
         s_exited = xSemaphoreCreateBinary();
         if (!s_exited) ESP_LOGW(TAG, "No exit semaphore; a restart will not wait for the task");
@@ -89,9 +117,13 @@ esp_err_t captive_dns_start(uint32_t ipv4_addr)
     // satisfied by the wrong task's exit.
     if (s_exited) xSemaphoreTake(s_exited, 0);
 
-    s_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s_socket < 0) {
+    auto* context = new (std::nothrow) DnsTaskContext;
+    if (!context) return ESP_ERR_NO_MEM;
+    context->answer_addr = ipv4_addr;
+    context->socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (context->socket < 0) {
         ESP_LOGE(TAG, "Could not create the DNS socket: errno %d", errno);
+        delete context;
         return ESP_FAIL;
     }
 
@@ -100,20 +132,19 @@ esp_err_t captive_dns_start(uint32_t ipv4_addr)
     addr.sin_port = htons(53);
     addr.sin_addr.s_addr = ipv4_addr;
 
-    if (bind(s_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (bind(context->socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         ESP_LOGE(TAG, "Could not bind port 53: errno %d", errno);
-        close(s_socket);
-        s_socket = -1;
+        close(context->socket);
+        delete context;
         return ESP_FAIL;
     }
 
-    s_running = true;
-    if (xTaskCreate(dns_task, "captive_dns", 3072, nullptr, 5, &s_task) != pdPASS) {
+    s_context = context;
+    if (xTaskCreate(dns_task, "captive_dns", 3072, context, 5, nullptr) != pdPASS) {
         ESP_LOGE(TAG, "Could not start the DNS task");
-        s_running = false;
-        s_task = nullptr;
-        close(s_socket);
-        s_socket = -1;
+        close(s_context->socket);
+        s_context = nullptr;
+        delete context;
         return ESP_ERR_NO_MEM;
     }
 
@@ -126,20 +157,22 @@ esp_err_t captive_dns_start(uint32_t ipv4_addr)
 
 void captive_dns_stop()
 {
-    if (!s_running) return;
+    if (!s_mutex) return;
 
-    // Clearing the flag first, then closing, so the blocked recvfrom returns
-    // and the task sees that it is meant to exit rather than retrying.
-    s_running = false;
-    if (s_socket >= 0) {
-        shutdown(s_socket, SHUT_RDWR);
-        close(s_socket);
-        s_socket = -1;
+    {
+        Lock lock(s_mutex);
+        if (!s_context) return;
+
+        // Clearing the flag first, then shutting down, so the blocked recvfrom
+        // returns and the task sees that it is meant to exit rather than
+        // retrying. The task closes the descriptor after it has left the
+        // receive loop, so it cannot be reused while that task still runs.
+        s_context->running = false;
+        shutdown(s_context->socket, SHUT_RDWR);
     }
 
-    // Waited for rather than assumed. The descriptor has already been released
-    // at this point, so returning early would let the next start() be handed it
-    // while the old task is still using it.
+    // A timeout intentionally leaves the context published. A later start then
+    // refuses instead of reusing a descriptor still owned by this task.
     if (s_exited && xSemaphoreTake(s_exited, pdMS_TO_TICKS(EXIT_TIMEOUT_MS)) != pdTRUE) {
         ESP_LOGW(TAG, "DNS task did not exit within %" PRIu32 " ms", EXIT_TIMEOUT_MS);
     }
