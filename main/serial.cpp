@@ -31,12 +31,20 @@ esp_err_t SerialPort::start()
     err = uart_param_config(PORT, &cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Config failed: %s", esp_err_to_name(err));
+        esp_err_t cleanup = uart_driver_delete(PORT);
+        if (cleanup != ESP_OK) {
+            ESP_LOGW(TAG, "Could not clean up UART driver: %s", esp_err_to_name(cleanup));
+        }
         return err;
     }
 
     err = uart_set_pin(PORT, TX_PIN, RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Pin assignment failed: %s", esp_err_to_name(err));
+        esp_err_t cleanup = uart_driver_delete(PORT);
+        if (cleanup != ESP_OK) {
+            ESP_LOGW(TAG, "Could not clean up UART driver: %s", esp_err_to_name(cleanup));
+        }
         return err;
     }
 
