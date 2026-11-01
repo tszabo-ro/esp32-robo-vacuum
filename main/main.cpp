@@ -38,6 +38,13 @@ static constexpr uint32_t LED_CHECK_MS = 100;
 static constexpr int RSSI_GOOD_DBM = -65;
 static constexpr int RSSI_FAIR_DBM = -75;
 
+// Starting the management interface allocates the HTTP server's route table
+// and its worker resources. A transient low-memory failure should not turn a
+// usable image into an immediate rollback, but a permanently broken image must
+// still be allowed to roll back rather than waiting forever.
+static constexpr int WEB_START_ATTEMPTS = 3;
+static constexpr uint32_t WEB_START_RETRY_MS = 2000;
+
 // Services that cannot start until the device is on the network.
 struct NetworkServices {
     MqttClient& mqtt;
@@ -144,7 +151,15 @@ static void network_services_task(void* arg)
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
-    esp_err_t web_err = services->web.start();
+    esp_err_t web_err = ESP_FAIL;
+    for (int attempt = 1; attempt <= WEB_START_ATTEMPTS; ++attempt) {
+        web_err = services->web.start();
+        if (web_err == ESP_OK) break;
+
+        ESP_LOGW(TAG, "Web server start attempt %d/%d failed: %s", attempt,
+                 WEB_START_ATTEMPTS, esp_err_to_name(web_err));
+        if (attempt < WEB_START_ATTEMPTS) vTaskDelay(pdMS_TO_TICKS(WEB_START_RETRY_MS));
+    }
     if (web_err != ESP_OK) {
         ESP_LOGE(TAG, "Web server failed to start: %s", esp_err_to_name(web_err));
 

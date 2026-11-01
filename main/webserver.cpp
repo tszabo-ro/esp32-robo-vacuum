@@ -225,6 +225,13 @@ esp_err_t WebServer::start()
         esp_err_t reg = httpd_register_uri_handler(server_, &uri);
         if (reg != ESP_OK) {
             ESP_LOGE(TAG, "Could not register %s: %s", r.uri, esp_err_to_name(reg));
+            // A server missing even one route is not a usable management
+            // interface. In particular, reporting this start as successful
+            // would let a pending OTA image cancel its rollback despite being
+            // unable to serve a required recovery endpoint.
+            httpd_stop(server_);
+            server_ = nullptr;
+            return reg;
         }
     }
 
