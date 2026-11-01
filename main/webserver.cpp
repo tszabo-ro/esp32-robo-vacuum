@@ -206,6 +206,7 @@ esp_err_t WebServer::start()
         {"/api/command",  HTTP_POST, handle_post_command, false},
         {"/api/robot/command", HTTP_POST, handle_post_robot_command, false},
         {"/api/ota",      HTTP_POST, handle_post_ota,     false},
+        {"/api/update-check", HTTP_POST, handle_post_update_check, false},
         {"/ws",           HTTP_GET,  handle_ws,           true},
     };
 
@@ -819,6 +820,14 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     cJSON_AddStringToObject(fw, "version", app ? app->version : "unknown");
     if (running) cJSON_AddStringToObject(fw, "partition", running->label);
 
+    const UpdateCheckStatus update = self->ota_.update_check_status();
+    cJSON* update_obj = cJSON_AddObjectToObject(root, "update");
+    cJSON_AddBoolToObject(update_obj, "checking", update.checking);
+    cJSON_AddBoolToObject(update_obj, "checked", update.checked);
+    cJSON_AddBoolToObject(update_obj, "available", update.available);
+    if (update.version[0]) cJSON_AddStringToObject(update_obj, "version", update.version);
+    if (update.error[0]) cJSON_AddStringToObject(update_obj, "error", update.error);
+
     cJSON_AddNumberToObject(root, "heap_free", esp_get_free_heap_size());
 
     // Live frames are dropped rather than blocking the UART reader or the log
@@ -1016,6 +1025,21 @@ esp_err_t WebServer::handle_post_ota(httpd_req_t* req)
     }
     ESP_LOGW(TAG, "Firmware update started from the web interface");
     return send_json(req, R"({"ok":true,"status":"downloading"})");
+}
+
+esp_err_t WebServer::handle_post_update_check(httpd_req_t* req)
+{
+    if (!allow_session_json(req)) return refusal_result(req);
+
+    auto* self = static_cast<WebServer*>(req->user_ctx);
+    esp_err_t err = self->ota_.check_for_update();
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_status(req, "409 Conflict", "An update check is already running");
+    }
+    if (err != ESP_OK) {
+        return send_status(req, "500 Internal Server Error", "Could not start update check");
+    }
+    return send_json(req, R"({"ok":true,"status":"checking"})");
 }
 
 // --- WebSocket ---

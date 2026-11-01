@@ -41,6 +41,7 @@ private:
     static esp_err_t handle_post_command(httpd_req_t* req);
     static esp_err_t handle_post_robot_command(httpd_req_t* req);
     static esp_err_t handle_post_ota(httpd_req_t* req);
+    static esp_err_t handle_post_update_check(httpd_req_t* req);
     static esp_err_t handle_ws(httpd_req_t* req);
 
     // --- Access control ---

@@ -131,6 +131,11 @@ under Settings.
 <div class="row" id="ap-row" style="display:none"><span class="label">Setup AP</span><span id="ap-status">--</span></div>
 <div class="row"><span class="label">MQTT</span><span id="m-status">--</span></div>
 <div class="row"><span class="label">Firmware</span><span id="fw">--</span></div>
+<div class="actions">
+<button class="plain-btn" id="check-updates">Check for updates</button>
+<button class="warn-btn" id="install-update" style="display:none"></button>
+</div>
+<div class="note" id="update-note">Check GitHub for a newer firmware release.</div>
 <div class="row"><span class="label">Free Heap</span><span id="heap">--</span></div>
 </div>
 </section>
@@ -462,6 +467,51 @@ function startOta(){
               else report(j)}).catch(()=>{});
 }
 
+const LATEST_FIRMWARE_URL='https://github.com/tszabo-ro/esp32-robo-vacuum/releases/latest/download/neato-mqtt-controller.bin';
+
+function checkUpdates(){
+  $('check-updates').disabled=true;
+  $('check-updates').textContent='Checking…';
+  post('/api/update-check',{}).then(j=>{
+    if(!j.ok) report(j);
+    refreshStatus();
+  }).catch(()=>{
+    $('check-updates').disabled=false;
+    $('check-updates').textContent='Check for updates';
+    $('update-note').textContent='Could not check for updates';
+  });
+}
+
+function installLatestUpdate(){
+  const version=$('install-update').dataset.version||'the latest release';
+  if(!confirm('Install firmware '+version+' and reboot?')) return;
+  post('/api/ota',{url:LATEST_FIRMWARE_URL}).then(j=>{
+    if(j.ok) alert('Downloading. Watch the Log tab; the device reboots when done.');
+    else report(j);
+  }).catch(()=>{});
+}
+
+function renderUpdateCheck(u){
+  const check=$('check-updates'), install=$('install-update'), note=$('update-note');
+  const checking=!!(u&&u.checking);
+  check.disabled=checking;
+  check.textContent=checking?'Checking…':'Check for updates';
+  install.style.display=u&&u.available?'block':'none';
+  if(u&&u.available){
+    install.textContent='Update to '+u.version;
+    install.dataset.version=u.version;
+    note.textContent='A newer firmware release is available.';
+  }else if(checking){
+    note.textContent='Checking the latest published release…';
+  }else if(u&&u.checked){
+    note.textContent='You are running the latest release.';
+  }else if(u&&u.error){
+    note.textContent='Update check failed: '+u.error;
+  }else{
+    note.textContent='Check GitHub for a newer firmware release.';
+  }
+}
+
 function logout(){
   post('/api/logout',{}).then(()=>showGate(false)).catch(()=>showGate(false));
 }
@@ -527,6 +577,7 @@ function refreshStatus(){
 
     if(s.firmware) $('fw').textContent=
       s.firmware.version+(s.firmware.partition?' ('+s.firmware.partition+')':'');
+    renderUpdateCheck(s.update);
     $('heap').textContent=s.heap_free+' bytes';
 
     // Adopt the device's rate once, so polling cannot fight the user's choice.
@@ -558,6 +609,8 @@ $('save-wifi').addEventListener('click',saveWifi);
 $('save-ap').addEventListener('click',saveAp);
 $('save-mqtt').addEventListener('click',saveMqtt);
 $('start-ota').addEventListener('click',startOta);
+$('check-updates').addEventListener('click',checkUpdates);
+$('install-update').addEventListener('click',installLatestUpdate);
 $('save-password').addEventListener('click',changePassword);
 $('pw-confirm').addEventListener('keydown',e=>{if(e.key==='Enter')changePassword()});
 $('logout').addEventListener('click',logout);

@@ -385,9 +385,10 @@ the device, which is where a bug here is a security bug rather than a nuisance:
 the captive portal's DNS parser, the `Origin` and `Content-Type` checks, broker
 URI redaction, UART escaping, and the constant-time compare.
 
-Those live in `main/text_util.*` and `main/dns_message.*`, deliberately free of
-any ESP-IDF include, which is the only reason they can be tested this way. The
-rest of the firmware is welded to the platform and is verified on a device.
+The helpers live in `main/text_util.*`, `main/dns_message.*`,
+`main/firmware_version.*` and `main/robot_response.*`, deliberately free of ESP-IDF
+includes so the host can test them. The rest of the firmware is welded to the
+platform and is verified on a device.
 
 Worth knowing about the DNS cases: they are written against a buffer long
 enough that the compression-pointer rejection is the only thing that can refuse
@@ -443,7 +444,8 @@ git push origin v0.1.2
 ```
 
 Then either paste the URL into **Settings → Firmware Update** in the web
-interface, or run it from the USB serial console:
+interface, use **Status → Check for updates** to see whether a newer release is
+available and install it from there, or run it from the USB serial console:
 
 ```
 neato> ota_update https://github.com/tszabo-ro/esp32-robo-vacuum/releases/latest/download/neato-mqtt-controller.bin
