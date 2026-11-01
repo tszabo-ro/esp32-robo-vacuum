@@ -156,6 +156,19 @@ WebServer::WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialConsole& serial, Ne
 
 esp_err_t WebServer::start()
 {
+    // These are allocated in the constructor so they are ready before the
+    // serial receiver can publish, but allocation failure there is not
+    // permanent: a previous startup attempt may have released enough heap for
+    // a later retry. Do not start a worker unless its required handle exists;
+    // FreeRTOS asserts on a null queue or stream buffer.
+    if (!clients_mutex_) clients_mutex_ = xSemaphoreCreateMutex();
+    if (!log_stream_) log_stream_ = xStreamBufferCreate(4096, 1);
+    if (!ws_tx_queue_) ws_tx_queue_ = xQueueCreate(WS_TX_QUEUE_DEPTH, sizeof(std::string*));
+    if (!clients_mutex_ || !log_stream_ || !ws_tx_queue_) {
+        ESP_LOGE(TAG, "Could not allocate WebSocket resources");
+        return ESP_ERR_NO_MEM;
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 16;
     config.lru_purge_enable = true;
