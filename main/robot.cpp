@@ -1,0 +1,145 @@
+#include "robot.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string_view>
+#include "esp_log.h"
+#include "freertos/task.h"
+
+namespace {
+constexpr const char* TAG = "robot";
+constexpr uint32_t POLL_PERIOD_MS = 10000;
+constexpr uint32_t COMMAND_TIMEOUT_MS = 1800;
+constexpr size_t RESPONSE_BYTES = 1024;
+
+class Lock {
+public:
+    explicit Lock(SemaphoreHandle_t mutex) : mutex_(mutex)
+    {
+        if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
+    }
+    ~Lock() { if (mutex_) xSemaphoreGive(mutex_); }
+    Lock(const Lock&) = delete;
+    Lock& operator=(const Lock&) = delete;
+private:
+    SemaphoreHandle_t mutex_;
+};
+}
+
+NeatoRobot::NeatoRobot(SerialConsole& console)
+    : console_(console)
+    , mutex_(xSemaphoreCreateMutex())
+{
+    if (!mutex_) ESP_LOGE(TAG, "Could not create the status mutex");
+    std::strcpy(status_.state, "unknown");
+}
+
+void NeatoRobot::start()
+{
+    if (task_started_) return;
+    task_started_ = xTaskCreate(poll_task, "robot_poll", 3072, this, 5, nullptr) == pdPASS;
+    if (!task_started_) ESP_LOGE(TAG, "Could not start the status poller");
+}
+
+RobotStatus NeatoRobot::status() const
+{
+    RobotStatus result = {};
+    if (!mutex_) return result;
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    result = status_;
+    if (last_update_ != 0) {
+        result.age_seconds = static_cast<uint32_t>((xTaskGetTickCount() - last_update_)
+                                                   * portTICK_PERIOD_MS / 1000);
+    }
+    xSemaphoreGive(mutex_);
+    return result;
+}
+
+bool NeatoRobot::command(const char* action)
+{
+    if (!action) return false;
+    const char* wire = nullptr;
+    if (std::strcmp(action, "start") == 0) wire = "Clean House";
+    else if (std::strcmp(action, "spot") == 0) wire = "Clean Spot";
+    else if (std::strcmp(action, "stop") == 0) wire = "Clean Stop";
+    else return false;
+
+    char response[512];
+    if (!exchange(wire, response, sizeof(response))) {
+        ESP_LOGW(TAG, "Robot command '%s' did not get a complete reply", action);
+        return false;
+    }
+    return true;
+}
+
+bool NeatoRobot::poll_once()
+{
+    char response[RESPONSE_BYTES];
+    char robot_state[sizeof(status_.state)];
+    if (!exchange("GetState", response, sizeof(response)))
+        return false;
+
+    const char* state = std::strstr(response, "Current Robot State is:");
+    if (!state) return false;
+    state += std::strlen("Current Robot State is:");
+    while (*state == ' ' || *state == '\t') ++state;
+    const char* state_end = std::strpbrk(state, "\r\n");
+    const size_t state_len = state_end ? static_cast<size_t>(state_end - state)
+                                       : std::strlen(state);
+    if (state_len == 0 || state_len >= sizeof(robot_state)) return false;
+    std::memcpy(robot_state, state, state_len);
+    robot_state[state_len] = '\0';
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+    if (!exchange("GetCharger", response, sizeof(response)))
+        return false;
+
+    const char* fuel = std::strstr(response, "FuelPercent,");
+    if (!fuel) return false;
+    fuel += std::strlen("FuelPercent,");
+    char* number_end = nullptr;
+    long battery = std::strtol(fuel, &number_end, 10);
+    if (number_end == fuel || battery < 0 || battery > 100) return false;
+
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    std::memcpy(status_.state, robot_state, state_len + 1);
+    status_.battery_percent = static_cast<int>(battery);
+    status_.available = true;
+    last_update_ = xTaskGetTickCount();
+    xSemaphoreGive(mutex_);
+    return true;
+}
+
+bool NeatoRobot::exchange(const char* command, char* response, size_t capacity)
+{
+    size_t used = 0;
+    char request[64];
+    const size_t command_length = std::strlen(command);
+    if (command_length + 2 > sizeof(request)) return false;
+    std::memcpy(request, command, command_length);
+    request[command_length] = '\n';
+    request[command_length + 1] = '\0';
+    bool complete = console_.request(std::string_view(request, command_length + 1), 0x1a,
+                                     response, capacity, used, COMMAND_TIMEOUT_MS);
+    if (complete) {
+        ESP_LOGI(TAG, "Sent robot command: %s", command);
+        ESP_LOGI(TAG, "Robot replied: %.*s", static_cast<int>(used), response);
+    }
+    return complete;
+}
+
+void NeatoRobot::poll_task(void* arg)
+{
+    auto* self = static_cast<NeatoRobot*>(arg);
+    while (true) {
+        if (!self->console_.started() || !self->poll_once()) {
+            if (self->mutex_) {
+                xSemaphoreTake(self->mutex_, portMAX_DELAY);
+                self->status_.available = false;
+                xSemaphoreGive(self->mutex_);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(POLL_PERIOD_MS));
+    }
+}

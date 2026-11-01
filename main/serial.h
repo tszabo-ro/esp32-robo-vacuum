@@ -5,12 +5,10 @@
 #include "driver/uart.h"
 #include "esp_err.h"
 #include "hal/gpio_types.h"
+#include "freertos/semphr.h"
 
-// A hardware UART exposed as a terminal to the debug web interface.
-//
-// This is the link the vacuum is wired to. The USB-Serial-JTAG console is a
-// separate interface and is unaffected by anything here, so opening a terminal
-// in the browser cannot disturb the serial console.
+// Low-level hardware UART byte transport. SerialConsole owns receiving,
+// request/response coordination and subscriber fanout above this layer.
 class SerialPort {
 public:
     // Configures the UART and installs its driver. Idempotent.
@@ -49,4 +47,5 @@ private:
 
     uint32_t baud_ = DEFAULT_BAUD;
     bool started_ = false;
+    SemaphoreHandle_t mutex_ = nullptr;
 };
