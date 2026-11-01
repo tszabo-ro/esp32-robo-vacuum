@@ -113,14 +113,16 @@ The recovery access point is using the built-in default passphrase. Set your own
 under Settings.
 </div>
 <div class="card">
-<h2>Vacuum</h2>
-<div class="row"><span class="label">State</span><span id="v-state">--</span></div>
-<div class="row"><span class="label">Battery</span><span id="v-battery">--</span></div>
+<h2>Robot</h2>
+<div class="row"><span class="label">Connection</span><span id="r-connection">Waiting for robot…</span></div>
+<div class="row"><span class="label">State</span><span id="r-state">--</span></div>
+<div class="row"><span class="label">Battery</span><span id="r-battery">--</span></div>
 <div class="actions">
-<button class="btn-start" data-cmd="start">Start</button>
-<button class="btn-stop" data-cmd="stop">Stop</button>
-<button class="btn-dock" data-cmd="return_to_base">Dock</button>
+<button class="btn-start" data-robot-cmd="start">Start</button>
+<button class="btn-dock" data-robot-cmd="spot">Spot clean</button>
+<button class="btn-stop" data-robot-cmd="stop">Stop</button>
 </div>
+<div class="note">Status updates every 10 seconds. Stop uses the Neato Clean Stop command.</div>
 </div>
 <div class="card">
 <h2>Connectivity</h2>
@@ -429,6 +431,12 @@ function cmd(action){
   post('/api/command',{command:action}).then(j=>{if(!j.ok)report(j)}).catch(()=>{});
 }
 
+function robotCmd(action){
+  post('/api/robot/command',{command:action}).then(j=>{
+    if(!j.ok)report(j); else setTimeout(refreshStatus,500);
+  }).catch(()=>{});
+}
+
 function saveWifi(){
   post('/api/wifi',{ssid:$('wifi-ssid').value,password:$('wifi-pass').value})
     .then(j=>{if(j.ok){$('wifi-pass').value='';alert('Saved. Connecting in the background.')}
@@ -495,8 +503,11 @@ function refreshStatus(){
     if(r.status===401){showGate(false);return Promise.reject(new Error('signed out'))}
     return r.json();
   }).then(s=>{
-    $('v-state').textContent=s.vacuum.state;
-    $('v-battery').textContent=s.vacuum.battery+'%';
+    const robot=s.robot||{};
+    $('r-connection').textContent=robot.available
+      ?'Connected (updated '+robot.age_seconds+'s ago)':'Not responding';
+    $('r-state').textContent=robot.available?robot.state:'--';
+    $('r-battery').textContent=robot.available&&robot.battery>=0?robot.battery+'%':'--';
 
     const wd=s.wifi.connected;
     setDot($('w-status'),wd,wd?(s.wifi.ssid||'Connected'):(s.wifi.state||'Disconnected'));
@@ -530,6 +541,9 @@ document.querySelectorAll('nav button').forEach(b=>{
 });
 document.querySelectorAll('[data-cmd]').forEach(b=>{
   b.addEventListener('click',()=>cmd(b.dataset.cmd));
+});
+document.querySelectorAll('[data-robot-cmd]').forEach(b=>{
+  b.addEventListener('click',()=>robotCmd(b.dataset.robotCmd));
 });
 $('boot-retry').addEventListener('click',()=>{bootAttempt=0;boot()});
 $('gate-submit').addEventListener('click',submitGate);

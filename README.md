@@ -9,10 +9,11 @@ ESP32-C3 SuperMini based controller for Neato D5 robot vacuum, enabling Home Ass
 - OTA updates over HTTPS
 - WiFi configuration, with a fallback access point for recovery
 
-**The vacuum itself is simulated.** `main/vacuum.cpp` is an in-memory state
-machine — it publishes plausible states and a draining battery, and nothing in
-`main/` yet speaks the Neato protocol documented under `docs/`. The serial bridge
-is wired to the robot and works; driving the robot with it is the next step.
+**MQTT vacuum state is still simulated.** `main/vacuum.cpp` remains an in-memory
+state machine for Home Assistant. The web Status page now polls `GetState` and
+`GetCharger` over the robot UART and can issue Start, Spot clean, and Stop
+commands. Return-to-base is not yet wired because the Neato `SetEvent` command
+requires a robot-specific SKey.
 
 ## Hardware
 - ESP32-C3 SuperMini
@@ -466,10 +467,12 @@ needs a publicly trusted certificate — a self-signed local server is rejected.
 ## Project Status
 
 Working: build environment, CI and tagged releases, WiFi with a fallback access
-point, OTA over HTTPS, MQTT with Home Assistant discovery, the serial bridge, and
-a password-protected web interface.
+point, OTA over HTTPS, MQTT with Home Assistant discovery, live Neato status and
+basic controls on the web Status page, the serial bridge, and a password-protected
+web interface.
 
-Next: replace the simulated vacuum with the real Neato serial protocol.
+Next: replace the simulated MQTT vacuum with real Neato state and command
+integration, including authenticated return-to-base support.
 
 ## License
 TBD
