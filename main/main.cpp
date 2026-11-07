@@ -32,6 +32,9 @@ static constexpr uint32_t HEARTBEAT_FLASH_MS = 40;
 static constexpr uint32_t HEARTBEAT_GAP_MS = 220;
 static constexpr uint32_t HEARTBEAT_GROUP_GAP_MS = 1200;
 static constexpr uint32_t LED_CHECK_MS = 100;
+static constexpr uint32_t OTA_FLASH_MS = 100;
+static constexpr uint32_t OTA_GAP_MS = 100;
+static constexpr uint32_t OTA_PATTERN_GAP_MS = 700;
 
 // Signal buckets. Chosen around the -64dBm seen on the bench: anything at or
 // below FAIR is where association starts becoming unreliable.
@@ -44,6 +47,23 @@ static constexpr int RSSI_FAIR_DBM = -75;
 // still be allowed to roll back rather than waiting forever.
 static constexpr int WEB_START_ATTEMPTS = 3;
 static constexpr uint32_t WEB_START_RETRY_MS = 2000;
+
+static const char* reset_reason_name(esp_reset_reason_t reason)
+{
+    switch (reason) {
+    case ESP_RST_POWERON:   return "power-on";
+    case ESP_RST_EXT:       return "external reset";
+    case ESP_RST_SW:        return "software reset";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_INT_WDT:   return "interrupt watchdog";
+    case ESP_RST_TASK_WDT:  return "task watchdog";
+    case ESP_RST_WDT:       return "other watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "unknown";
+    }
+}
 
 // Services that cannot start until the device is on the network.
 struct NetworkServices {
@@ -91,6 +111,7 @@ static int flashes_for_signal(int rssi_dbm)
 
 static void led_task(void* arg)
 {
+    auto* ota = static_cast<OtaUpdater*>(arg);
     gpio_reset_pin(LED_PIN);
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_PIN, 1); // off (active-low)
@@ -101,6 +122,17 @@ static void led_task(void* arg)
             // is the only confirmation that the hold has been registered.
             led_flash(LED_CHECK_MS);
             vTaskDelay(pdMS_TO_TICKS(LED_CHECK_MS));
+            continue;
+        }
+
+        if (ota && ota->in_progress()) {
+            // A quick double pulse repeating once a second is distinct from
+            // every network-state heartbeat and remains visible during the
+            // lengthy, otherwise silent, flash write phase of an OTA update.
+            led_flash(OTA_FLASH_MS);
+            vTaskDelay(pdMS_TO_TICKS(OTA_GAP_MS));
+            led_flash(OTA_FLASH_MS);
+            vTaskDelay(pdMS_TO_TICKS(OTA_PATTERN_GAP_MS));
             continue;
         }
 
@@ -218,6 +250,9 @@ extern "C" void app_main()
     ESP_LOGI(TAG, "=== Neato D5 MQTT Controller ===");
     ESP_LOGI(TAG, "Version: %s", app ? app->version : "unknown");
     ESP_LOGI(TAG, "ESP-IDF Version: %s", esp_get_idf_version());
+    const esp_reset_reason_t reset_reason = esp_reset_reason();
+    ESP_LOGI(TAG, "Reset reason: %s (%d)", reset_reason_name(reset_reason),
+             static_cast<int>(reset_reason));
 
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -250,7 +285,7 @@ extern "C" void app_main()
     static SerialPort uart;
     static SerialConsole serial(uart);
     static NeatoRobot robot(serial);
-    static OtaUpdater ota;
+    static OtaUpdater ota(robot);
     static WebServer web(vacuum, mqtt, serial, robot, ota);
     static NetworkServices services{mqtt, web};
 
@@ -267,7 +302,7 @@ extern "C" void app_main()
     // fails to start here is the worst case of the lot: net_svc not coming up
     // means no web server and no MQTT, for good, on a device whose whole
     // recovery story is the web server.
-    if (xTaskCreate(led_task, "led", 2048, nullptr, 5, nullptr) != pdPASS) {
+    if (xTaskCreate(led_task, "led", 2048, &ota, 5, nullptr) != pdPASS) {
         ESP_LOGE(TAG, "Could not start the status LED task");
     }
     if (xTaskCreate(console_task, "console", 4096, &ota, 5, nullptr) != pdPASS) {

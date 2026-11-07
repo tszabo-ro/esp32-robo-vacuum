@@ -38,8 +38,27 @@ NeatoRobot::NeatoRobot(SerialConsole& console)
 void NeatoRobot::start()
 {
     if (task_started_) return;
-    task_started_ = xTaskCreate(poll_task, "robot_poll", 3072, this, 5, nullptr) == pdPASS;
+    task_started_ = xTaskCreate(poll_task, "robot_poll", 3072, this, 5, &poll_task_) == pdPASS;
     if (!task_started_) ESP_LOGE(TAG, "Could not start the status poller");
+}
+
+void NeatoRobot::suspend()
+{
+    if (suspended_.exchange(true)) return;
+    if (poll_task_) vTaskSuspend(poll_task_);
+    if (mutex_) {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        status_.available = false;
+        xSemaphoreGive(mutex_);
+    }
+    ESP_LOGI(TAG, "Robot polling suspended for OTA update");
+}
+
+void NeatoRobot::resume()
+{
+    if (!suspended_.exchange(false)) return;
+    if (poll_task_) vTaskResume(poll_task_);
+    ESP_LOGI(TAG, "Robot polling resumed after OTA update failure");
 }
 
 RobotStatus NeatoRobot::status() const
@@ -58,7 +77,7 @@ RobotStatus NeatoRobot::status() const
 
 bool NeatoRobot::command(const char* action)
 {
-    if (!action) return false;
+    if (!action || suspended_) return false;
     const char* wire = nullptr;
     if (std::strcmp(action, "start") == 0) wire = "Clean House";
     else if (std::strcmp(action, "spot") == 0) wire = "Clean Spot";

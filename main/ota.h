@@ -7,6 +7,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+class NeatoRobot;
+
 struct UpdateCheckStatus {
     bool checking = false;
     bool checked = false;
@@ -27,7 +29,7 @@ struct UpdateCheckStatus {
 // embedding a per-host certificate.
 class OtaUpdater {
 public:
-    OtaUpdater();
+    explicit OtaUpdater(NeatoRobot& robot);
 
     // Starts downloading `url` and reboots into the new image on success.
     // Returns ESP_ERR_INVALID_STATE if an update is already running, or
@@ -40,6 +42,7 @@ public:
     // Checks the latest published GitHub release without blocking the caller.
     esp_err_t check_for_update();
     UpdateCheckStatus update_check_status() const;
+    bool in_progress() const { return in_progress_; }
 
     // Confirms the running image is healthy, cancelling the pending rollback.
     // Does nothing unless this boot is a new image awaiting verification, so
@@ -57,14 +60,16 @@ private:
     void set_update_check_result(bool success, bool available,
                                  const char* version, const char* error);
 
-    // TLS plus the HTTP client needs considerably more stack than a plain task.
-    static constexpr uint32_t TASK_STACK_BYTES = 8192;
+    // TLS plus flash writes need more stack than an update check. Giving the
+    // update worker the same headroom keeps it from failing mid-transfer.
+    static constexpr uint32_t TASK_STACK_BYTES = 12288;
     static constexpr uint32_t CHECK_TASK_STACK_BYTES = 12288;
 
     // Log at most one progress line per this many percent.
     static constexpr int PROGRESS_LOG_STEP = 10;
 
     std::string url_;
+    NeatoRobot& robot_;
     std::atomic<bool> in_progress_{false};
     std::atomic<bool> check_in_progress_{false};
     mutable SemaphoreHandle_t check_mutex_ = nullptr;

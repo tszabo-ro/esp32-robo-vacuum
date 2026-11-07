@@ -172,6 +172,12 @@ esp_err_t WebServer::start()
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 17;
+    // ESP-IDF's HTTP server keeps three sockets for its listener and control
+    // channel. The ESP32-C3 has ten LWIP sockets total, so the default seven
+    // client sessions can consume every descriptor and leave OTA unable to
+    // open its HTTPS connection. Two browser sessions cover one live stream
+    // plus one REST request while reserving five descriptors for OTA and MQTT.
+    config.max_open_sockets = 2;
     config.lru_purge_enable = true;
     config.close_fn = session_closed;
     // Logging in runs PBKDF2, which needs more room than a JSON handler.

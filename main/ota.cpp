@@ -17,6 +17,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "robot.h"
 
 static constexpr const char* TAG = "ota";
 static constexpr int HTTP_TIMEOUT_MS = 10000;
@@ -67,8 +68,9 @@ esp_err_t capture_release_redirect(esp_http_client_event_t* event)
 
 }  // namespace
 
-OtaUpdater::OtaUpdater()
-    : check_mutex_(xSemaphoreCreateMutex())
+OtaUpdater::OtaUpdater(NeatoRobot& robot)
+    : robot_(robot)
+    , check_mutex_(xSemaphoreCreateMutex())
 {
     if (!check_mutex_) ESP_LOGE(TAG, "Could not create update-check mutex");
 }
@@ -202,6 +204,10 @@ void OtaUpdater::update_task(void* arg)
 {
     auto* self = static_cast<OtaUpdater*>(arg);
 
+    self->robot_.suspend();
+    ESP_LOGI(TAG, "OTA resources: free heap=%lu, minimum free heap=%lu",
+             static_cast<unsigned long>(esp_get_free_heap_size()),
+             static_cast<unsigned long>(esp_get_minimum_free_heap_size()));
     esp_err_t err = self->perform();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Update installed, rebooting into the new image");
@@ -210,6 +216,7 @@ void OtaUpdater::update_task(void* arg)
     }
 
     ESP_LOGE(TAG, "Update failed: %s", esp_err_to_name(err));
+    self->robot_.resume();
     self->in_progress_ = false;
     vTaskDelete(nullptr);
 }
