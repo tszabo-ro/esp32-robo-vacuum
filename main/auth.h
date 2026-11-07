@@ -68,4 +68,11 @@ bool session_alive(std::string_view token);
 
 void destroy_session(std::string_view token);
 
+// Controls whether a WebSocket upgrade and its subsequent frames must carry a
+// live interface session. Disabled by default and persisted in NVS. Disabling
+// it exposes the live log and UART terminal to every client on the active
+// network, so only an authenticated HTTP session may change it.
+bool websocket_auth_required();
+esp_err_t set_websocket_auth_required(bool required);
+
 }  // namespace Auth

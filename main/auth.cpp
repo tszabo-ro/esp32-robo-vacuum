@@ -51,6 +51,7 @@ uint8_t s_digest[DIGEST_BYTES] = {};
 
 int s_failures = 0;
 int64_t s_throttled_until_us = 0;
+bool s_websocket_auth_required = false;
 
 class Lock {
 public:
@@ -120,7 +121,16 @@ void Auth::init()
     size_t digest_len = sizeof(s_digest);
     esp_err_t err = nvs_get_blob(handle, "salt", s_salt, &salt_len);
     if (err == ESP_OK) err = nvs_get_blob(handle, "digest", s_digest, &digest_len);
+
+    uint8_t websocket_auth = 0;
+    const esp_err_t websocket_auth_err = nvs_get_u8(handle, "ws_auth", &websocket_auth);
     nvs_close(handle);
+
+    if (websocket_auth_err == ESP_OK && websocket_auth <= 1) {
+        s_websocket_auth_required = websocket_auth != 0;
+    } else if (websocket_auth_err != ESP_OK && websocket_auth_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Could not load WebSocket authentication setting; keeping it enabled");
+    }
 
     if (err == ESP_OK && salt_len == sizeof(s_salt) && digest_len == sizeof(s_digest)) {
         s_configured = true;
@@ -291,4 +301,27 @@ void Auth::destroy_session(std::string_view token)
     Lock lock;
     Session* s = find_live_session(token, esp_timer_get_time());
     if (s) *s = Session{};
+}
+
+bool Auth::websocket_auth_required()
+{
+    Lock lock;
+    return s_websocket_auth_required;
+}
+
+esp_err_t Auth::set_websocket_auth_required(bool required)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+
+    err = nvs_set_u8(handle, "ws_auth", required ? 1 : 0);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK) return err;
+
+    Lock lock;
+    s_websocket_auth_required = required;
+    ESP_LOGW(TAG, "WebSocket authentication %s", required ? "enabled" : "disabled");
+    return ESP_OK;
 }

@@ -171,7 +171,7 @@ esp_err_t WebServer::start()
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 17;
     config.lru_purge_enable = true;
     config.close_fn = session_closed;
     // Logging in runs PBKDF2, which needs more room than a JSON handler.
@@ -221,6 +221,7 @@ esp_err_t WebServer::start()
         {"/api/robot/command", HTTP_POST, handle_post_robot_command, false},
         {"/api/ota",      HTTP_POST, handle_post_ota,     false},
         {"/api/update-check", HTTP_POST, handle_post_update_check, false},
+        {"/api/ws-security", HTTP_POST, handle_post_ws_security, false},
         {"/ws",           HTTP_GET,  handle_ws,           true},
     };
 
@@ -821,6 +822,10 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     cJSON_AddNumberToObject(ser, "baud", self->serial_.baud());
     cJSON_AddBoolToObject(ser, "started", self->serial_.started());
 
+    cJSON* websocket = cJSON_AddObjectToObject(root, "websocket");
+    cJSON_AddBoolToObject(websocket, "authentication_required",
+                          Auth::websocket_auth_required());
+
     cJSON* vac = cJSON_AddObjectToObject(root, "vacuum");
     cJSON_AddStringToObject(vac, "state", Vacuum::state_to_string(state));
     cJSON_AddNumberToObject(vac, "battery", battery);
@@ -1063,6 +1068,29 @@ esp_err_t WebServer::handle_post_update_check(httpd_req_t* req)
     return send_json(req, R"({"ok":true,"status":"checking"})");
 }
 
+esp_err_t WebServer::handle_post_ws_security(httpd_req_t* req)
+{
+    if (!allow_session_json(req)) return refusal_result(req);
+
+    auto body = read_body(req);
+    if (!body) return refusal_result(req);
+    JsonDoc doc(cJSON_Parse(body->c_str()));
+    if (!doc) return bad_request(req, "Invalid JSON");
+
+    cJSON* required = cJSON_GetObjectItem(doc.get(), "authentication_required");
+    if (!cJSON_IsBool(required)) {
+        return bad_request(req, "authentication_required must be true or false");
+    }
+
+    const bool enabled = cJSON_IsTrue(required);
+    esp_err_t err = Auth::set_websocket_auth_required(enabled);
+    if (err != ESP_OK) {
+        return send_status(req, "500 Internal Server Error", "Could not save WebSocket security setting");
+    }
+    return send_json(req, enabled ? R"({"ok":true,"authentication_required":true})"
+                                  : R"({"ok":true,"authentication_required":false})");
+}
+
 // --- WebSocket ---
 
 esp_err_t WebServer::handle_ws(httpd_req_t* req)
@@ -1070,27 +1098,35 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
     auto* self = static_cast<WebServer*>(req->user_ctx);
 
     if (req->method == HTTP_GET) {
-        // The upgrade is where this has to be checked. A WebSocket is not
-        // covered by the same-origin policy, so without a check here any page
-        // in any tab could open one to this device and both send and read.
+        // When enabled, the upgrade is where authentication must be checked. A
+        // WebSocket is not covered by the same-origin policy, so without the
+        // session and Origin check any page could open one to this device and
+        // both send and read. The persisted setting deliberately permits that
+        // exposure for troubleshooting.
         //
         // The server completes the handshake before a handler ever runs, so the
         // refusal is a closed socket rather than a 401: returning ESP_FAIL ends
         // the session, and the client is never added, so it is never sent
         // anything and no frame from it is ever read.
-        // Origin demanded here: a browser always sends it on an upgrade, and
-        // this is the request the same-origin policy does nothing about.
-        const std::string token = authorized_token(req, true);
-        if (token.empty()) {
-            ESP_LOGW(TAG, "Rejected an unauthenticated WebSocket upgrade");
-            return ESP_FAIL;
+        // Origin is demanded only with authentication: a browser always sends
+        // it on an upgrade, and this is the request the same-origin policy does
+        // nothing about.
+        const bool session_required = Auth::websocket_auth_required();
+        std::string token;
+        if (session_required) {
+            token = authorized_token(req, true);
+            if (token.empty()) {
+                ESP_LOGW(TAG, "Rejected an unauthenticated WebSocket upgrade");
+                return ESP_FAIL;
+            }
         }
 
         int fd = httpd_req_to_sockfd(req);
-        ESP_LOGI(TAG, "WebSocket client connected: fd=%d", fd);
-        // Remembered, not just checked. Everything after this point in the
-        // socket's life is measured against this token.
-        self->add_ws_client(fd, token);
+        ESP_LOGI(TAG, "WebSocket client connected: fd=%d (%s)", fd,
+                 session_required ? "authenticated" : "authentication disabled");
+        // Remembered, not just checked. While authentication is enabled,
+        // everything after this point is measured against this token.
+        self->add_ws_client(fd, token, session_required);
         return ESP_OK;
     }
 
@@ -1127,7 +1163,10 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
     {
         const int fd = httpd_req_to_sockfd(req);
         std::string token;
-        if (!self->ws_client_token(fd, token) || !Auth::validate_session(token)) {
+        bool session_required = false;
+        if (Auth::websocket_auth_required()
+            && (!self->ws_client_auth(fd, token, session_required) || !session_required
+                || !Auth::validate_session(token))) {
             ESP_LOGW(TAG, "WebSocket session no longer valid, closing fd=%d", fd);
             self->remove_ws_client(fd);
             return ESP_FAIL;  // closes the session
@@ -1168,7 +1207,7 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
     return ESP_OK;
 }
 
-void WebServer::add_ws_client(int fd, const std::string& token)
+void WebServer::add_ws_client(int fd, const std::string& token, bool session_required)
 {
     Lock lock(clients_mutex_);
 
@@ -1182,6 +1221,7 @@ void WebServer::add_ws_client(int fd, const std::string& token)
         // authorized it rather than leaving the previous holder's token on a
         // socket that now belongs to someone else.
         snprintf(c.token, sizeof(c.token), "%s", token.c_str());
+        c.session_required = session_required;
         return;
     }
 
@@ -1193,6 +1233,7 @@ void WebServer::add_ws_client(int fd, const std::string& token)
     WsClient client;
     client.fd = fd;
     snprintf(client.token, sizeof(client.token), "%s", token.c_str());
+    client.session_required = session_required;
     ws_clients_.push_back(client);
 }
 
@@ -1205,12 +1246,13 @@ void WebServer::remove_ws_client(int fd)
         ws_clients_.end());
 }
 
-bool WebServer::ws_client_token(int fd, std::string& out)
+bool WebServer::ws_client_auth(int fd, std::string& token, bool& session_required)
 {
     Lock lock(clients_mutex_);
     for (const auto& c : ws_clients_) {
         if (c.fd != fd) continue;
-        out = c.token;
+        token = c.token;
+        session_required = c.session_required;
         return true;
     }
     return false;
@@ -1302,7 +1344,8 @@ void WebServer::deliver_ws(const std::string& msg)
         // Checked without extending: a socket that merely stays open must not
         // renew its own session, or the lifetime would mean nothing to exactly
         // the client that never goes away.
-        if (!Auth::session_alive(client.token)) {
+        if (Auth::websocket_auth_required()
+            && (!client.session_required || !Auth::session_alive(client.token))) {
             ESP_LOGI(TAG, "WebSocket session ended, closing fd=%d", client.fd);
             remove_ws_client(client.fd);
             // The documented way to close a session from another task; doing it

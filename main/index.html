@@ -209,6 +209,14 @@ closes any open log or serial stream.</div>
 <div class="err" id="pw-err"></div>
 </div>
 <div class="card">
+<h2>Live Log &amp; UART</h2>
+<label class="chk"><input type="checkbox" id="ws-auth"> Require interface login</label>
+<button class="save-btn" id="save-ws-auth">Save</button>
+<div class="note">Disabling this makes the live log and UART terminal available
+to anyone on the active WiFi or recovery network. It does not disable login for
+the rest of the interface.</div>
+</div>
+<div class="card">
 <h2>Session</h2>
 <button class="plain-btn" id="logout">Sign out</button>
 </div>
@@ -220,6 +228,7 @@ const MAX_LINES=500;
 const MAX_SERIAL_CHARS=20000;
 let ws=null;
 let baudSynced=false;
+let wsAuthSynced=false;
 let pollTimer=null;
 let setupMode=false;
 
@@ -430,6 +439,11 @@ function setBaud(){
   post('/api/serial',{baud:parseInt($('baud').value,10)}).then(j=>report(j)).catch(()=>{});
 }
 
+function saveWsAuth(){
+  post('/api/ws-security',{authentication_required:$('ws-auth').checked})
+    .then(j=>report(j)).catch(()=>{});
+}
+
 /* Checked, unlike before: a rejected command used to look identical to one that
    worked. */
 function cmd(action){
@@ -582,6 +596,10 @@ function refreshStatus(){
 
     // Adopt the device's rate once, so polling cannot fight the user's choice.
     if(s.serial&&!baudSynced){$('baud').value=s.serial.baud;baudSynced=true}
+    if(s.websocket&&!wsAuthSynced){
+      $('ws-auth').checked=!!s.websocket.authentication_required;
+      wsAuthSynced=true;
+    }
   }).catch(()=>{});
 }
 
@@ -602,6 +620,7 @@ $('gate-pass').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
 $('gate-confirm').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
 $('gate-ap').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
 $('baud').addEventListener('change',setBaud);
+$('save-ws-auth').addEventListener('click',saveWsAuth);
 $('serial-clear').addEventListener('click',()=>{$('serial-output').textContent=''});
 $('serial-send').addEventListener('click',sendSerial);
 $('serial-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendSerial()});

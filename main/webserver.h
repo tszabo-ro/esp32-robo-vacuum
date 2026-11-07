@@ -42,6 +42,7 @@ private:
     static esp_err_t handle_post_robot_command(httpd_req_t* req);
     static esp_err_t handle_post_ota(httpd_req_t* req);
     static esp_err_t handle_post_update_check(httpd_req_t* req);
+    static esp_err_t handle_post_ws_security(httpd_req_t* req);
     static esp_err_t handle_ws(httpd_req_t* req);
 
     // --- Access control ---
@@ -120,14 +121,15 @@ private:
     struct WsClient {
         int fd = -1;
         char token[Auth::TOKEN_CHARS + 1] = {};
+        bool session_required = true;
     };
 
-    void add_ws_client(int fd, const std::string& token);
+    void add_ws_client(int fd, const std::string& token, bool session_required);
     void remove_ws_client(int fd);
 
-    // The token that opened `fd`, for revalidating an inbound frame. False when
-    // the descriptor is not a client this server knows about.
-    bool ws_client_token(int fd, std::string& out);
+    // The authorization state recorded for `fd`. False when the descriptor is
+    // not a client this server knows about.
+    bool ws_client_auth(int fd, std::string& token, bool& session_required);
 
     // Producer side: renders the message and hands it to the sender task.
     // Never blocks and never touches the HTTP server, so the UART reader and
