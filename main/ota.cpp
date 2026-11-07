@@ -130,6 +130,7 @@ esp_err_t OtaUpdater::perform_update_check()
     // can grow without bound. The download URL already used for installation
     // returns a zero-byte redirect to the versioned asset, so inspect that
     // bounded Location header instead of accepting an arbitrary response body.
+    ESP_LOGI(TAG, "Checking latest firmware through release redirect");
     ReleaseRedirect redirect;
     esp_http_client_config_t config = {};
     config.url = LATEST_FIRMWARE_URL;
