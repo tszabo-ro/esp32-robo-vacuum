@@ -12,6 +12,7 @@
 
 #include "dns_message.h"
 #include "firmware_version.h"
+#include "ota_release.h"
 #include "robot_response.h"
 #include "text_util.h"
 
@@ -408,6 +409,44 @@ void test_firmware_versions()
     CHECK(!firmware_version::is_newer({1, 9, 11}, current));
 }
 
+// --- OTA latest-release redirect validation ---
+
+void test_ota_release_redirect()
+{
+    std::printf("ota_release\n");
+
+    // HTTP field names are case-insensitive, including under HTTP/2.
+    CHECK(ota_release::is_location_header("Location"));
+    CHECK(ota_release::is_location_header("location"));
+    CHECK(ota_release::is_location_header("lOcAtIoN"));
+    CHECK(!ota_release::is_location_header("Location-Url"));
+
+    constexpr const char* redirect =
+        "https://github.com/tszabo-ro/esp32-robo-vacuum/releases/download/"
+        "v0.3.2/neato-mqtt-controller.bin";
+    char tag[40] = {};
+    CHECK(ota_release::tag_from_redirect(redirect, tag, sizeof(tag)));
+    CHECK_STR(tag, "v0.3.2");
+
+    // A release link must be to our expected repository and the expected
+    // binary; accepting a different asset would make the update button lie.
+    CHECK(!ota_release::tag_from_redirect(
+        "https://github.com/other/repo/releases/download/v0.3.2/neato-mqtt-controller.bin",
+        tag, sizeof(tag)));
+    CHECK(!ota_release::tag_from_redirect(
+        "https://github.com/tszabo-ro/esp32-robo-vacuum/releases/download/"
+        "v0.3.2/other.bin", tag, sizeof(tag)));
+    CHECK(!ota_release::tag_from_redirect(
+        "https://github.com/tszabo-ro/esp32-robo-vacuum/releases/download/"
+        "/neato-mqtt-controller.bin", tag, sizeof(tag)));
+
+    // A server-controlled tag still cannot overrun our fixed status buffer.
+    char too_small[6] = "keep";
+    CHECK(!ota_release::tag_from_redirect(redirect, too_small, sizeof(too_small)));
+    CHECK_STR(too_small, "keep");
+    CHECK(!ota_release::tag_from_redirect(redirect, nullptr, sizeof(tag)));
+}
+
 // --- Neato status response parsing ---
 
 void test_robot_response_parsing()
@@ -459,6 +498,7 @@ int main()
     test_dns_malformed();
     test_dns_no_room_for_answer();
     test_firmware_versions();
+    test_ota_release_redirect();
     test_robot_response_parsing();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

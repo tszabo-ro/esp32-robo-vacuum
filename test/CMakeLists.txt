@@ -21,6 +21,7 @@ add_executable(host_tests
     ../main/text_util.cpp
     ../main/dns_message.cpp
     ../main/firmware_version.cpp
+    ../main/ota_release.cpp
     ../main/robot_response.cpp
 )
 target_include_directories(host_tests PRIVATE ../main)

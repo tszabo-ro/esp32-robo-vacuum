@@ -11,6 +11,7 @@ idf_component_register(
         "mqtt.cpp"
         "webserver.cpp"
         "ota.cpp"
+        "ota_release.cpp"
         "serial.cpp"
         "serial_console.cpp"
         "robot.cpp"

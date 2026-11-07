@@ -5,10 +5,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <string_view>
 #include <utility>
-#include "cJSON.h"
 #include "firmware_version.h"
+#include "ota_release.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
@@ -22,9 +21,9 @@
 static constexpr const char* TAG = "ota";
 static constexpr int HTTP_TIMEOUT_MS = 10000;
 static constexpr int HTTP_BUFFER_BYTES = 2048;
-static constexpr const char* LATEST_RELEASE_API =
-    "https://api.github.com/repos/tszabo-ro/esp32-robo-vacuum/releases/latest";
-static constexpr size_t MAX_RELEASE_JSON_BYTES = 6144;
+static constexpr const char* LATEST_FIRMWARE_URL =
+    "https://github.com/tszabo-ro/esp32-robo-vacuum/releases/latest/download/"
+    "neato-mqtt-controller.bin";
 
 namespace {
 
@@ -41,17 +40,29 @@ private:
     SemaphoreHandle_t mutex_;
 };
 
-bool has_firmware_asset(cJSON* root)
+struct ReleaseRedirect {
+    static constexpr size_t MAX_LOCATION_BYTES = 192;
+
+    char location[MAX_LOCATION_BYTES] = {};
+    bool location_too_long = false;
+};
+
+esp_err_t capture_release_redirect(esp_http_client_event_t* event)
 {
-    cJSON* assets = cJSON_GetObjectItemCaseSensitive(root, "assets");
-    if (!cJSON_IsArray(assets)) return false;
-    cJSON* asset = nullptr;
-    cJSON_ArrayForEach(asset, assets) {
-        cJSON* name = cJSON_GetObjectItemCaseSensitive(asset, "name");
-        if (cJSON_IsString(name) && name->valuestring
-            && std::strcmp(name->valuestring, "neato-mqtt-controller.bin") == 0) return true;
+    if (event->event_id != HTTP_EVENT_ON_HEADER || !event->user_data
+        || !event->header_key || !event->header_value
+        || !ota_release::is_location_header(event->header_key)) {
+        return ESP_OK;
     }
-    return false;
+
+    auto* redirect = static_cast<ReleaseRedirect*>(event->user_data);
+    const size_t length = std::strlen(event->header_value);
+    if (length >= sizeof(redirect->location)) {
+        redirect->location_too_long = true;
+        return ESP_OK;
+    }
+    std::memcpy(redirect->location, event->header_value, length + 1);
+    return ESP_OK;
 }
 
 }  // namespace
@@ -115,71 +126,58 @@ void OtaUpdater::check_task(void* arg)
 
 esp_err_t OtaUpdater::perform_update_check()
 {
+    // GitHub's release JSON contains release notes and asset metadata, which
+    // can grow without bound. The download URL already used for installation
+    // returns a zero-byte redirect to the versioned asset, so inspect that
+    // bounded Location header instead of accepting an arbitrary response body.
+    ReleaseRedirect redirect;
     esp_http_client_config_t config = {};
-    config.url = LATEST_RELEASE_API;
+    config.url = LATEST_FIRMWARE_URL;
+    config.method = HTTP_METHOD_HEAD;
     config.crt_bundle_attach = esp_crt_bundle_attach;
     config.timeout_ms = HTTP_TIMEOUT_MS;
     config.buffer_size = HTTP_BUFFER_BYTES;
     config.buffer_size_tx = HTTP_BUFFER_BYTES;
+    config.disable_auto_redirect = true;
+    config.event_handler = capture_release_redirect;
+    config.user_data = &redirect;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return ESP_ERR_NO_MEM;
 
     esp_err_t err = esp_http_client_set_header(client, "User-Agent", "Neato-D5-Controller");
-    if (err == ESP_OK) err = esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
     if (err == ESP_OK) err = esp_http_client_open(client, 0);
 
-    char body[MAX_RELEASE_JSON_BYTES];
-    size_t used = 0;
     if (err == ESP_OK) {
         int64_t content_length = esp_http_client_fetch_headers(client);
-        if (content_length > static_cast<int64_t>(sizeof(body) - 1)) {
-            err = ESP_ERR_INVALID_SIZE;
-        } else if (esp_http_client_get_status_code(client) != 200) {
+        if (content_length < 0) {
             err = ESP_FAIL;
-        } else {
-            while (used + 1 < sizeof(body)) {
-                int received = esp_http_client_read(client, body + used,
-                                                    static_cast<int>(sizeof(body) - used - 1));
-                if (received < 0) {
-                    err = ESP_FAIL;
-                    break;
-                }
-                if (received == 0) break;
-                used += static_cast<size_t>(received);
-            }
-            if (used + 1 == sizeof(body)) err = ESP_ERR_INVALID_SIZE;
-            body[used] = '\0';
+        } else if (esp_http_client_get_status_code(client) != 302) {
+            err = ESP_FAIL;
         }
     }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     if (err != ESP_OK) return err;
 
-    cJSON* root = cJSON_ParseWithLength(body, used);
-    if (!root) return ESP_ERR_INVALID_RESPONSE;
-    cJSON* tag_item = cJSON_GetObjectItemCaseSensitive(root, "tag_name");
-    if (!cJSON_IsString(tag_item) || !tag_item->valuestring
-        || std::strlen(tag_item->valuestring) >= sizeof(check_status_.version)
-        || !has_firmware_asset(root)) {
-        cJSON_Delete(root);
+    char tag[sizeof(check_status_.version)] = {};
+    if (redirect.location_too_long
+        || !ota_release::tag_from_redirect(redirect.location, tag, sizeof(tag))) {
         return ESP_ERR_INVALID_RESPONSE;
     }
 
     const esp_app_desc_t* app = esp_app_get_description();
     firmware_version::Version latest = {};
     firmware_version::Version running = {};
-    if (!app || !firmware_version::parse_release_tag(tag_item->valuestring, latest)
+    if (!app || !firmware_version::parse_release_tag(tag, latest)
         || !firmware_version::parse_running_version(app->version, running)) {
-        cJSON_Delete(root);
         return ESP_ERR_INVALID_VERSION;
     }
 
     const bool available = firmware_version::is_newer(latest, running);
-    ESP_LOGI(TAG, "Latest release %s; update %s", tag_item->valuestring,
+    ESP_LOGI(TAG, "Latest release %s; update %s", tag,
              available ? "available" : "not needed");
-    set_update_check_result(true, available, tag_item->valuestring, nullptr);
-    cJSON_Delete(root);
+    set_update_check_result(true, available, tag, nullptr);
     return ESP_OK;
 }
 
