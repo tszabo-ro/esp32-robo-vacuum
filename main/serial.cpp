@@ -2,17 +2,13 @@
 
 #include <cinttypes>
 #include "esp_log.h"
-#include "freertos/semphr.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 static constexpr const char* TAG = "serial";
 
 esp_err_t SerialPort::start()
 {
     if (started_) return ESP_OK;
-    if (!mutex_) mutex_ = xSemaphoreCreateMutex();
-    if (!mutex_) return ESP_ERR_NO_MEM;
 
     esp_err_t err = uart_driver_install(PORT, RX_BUFFER_BYTES, TX_BUFFER_BYTES, 0, nullptr, 0);
     if (err != ESP_OK) {
@@ -58,20 +54,18 @@ esp_err_t SerialPort::start()
 int SerialPort::write(std::string_view data)
 {
     if (!started_ || data.empty()) return 0;
-    xSemaphoreTake(mutex_, portMAX_DELAY);
-    int written = uart_write_bytes(PORT, data.data(), data.size());
-    xSemaphoreGive(mutex_);
-    return written;
+    // The ESP-IDF UART driver has independent RX and TX paths. SerialConsole
+    // owns the higher-level request ordering; a lock here used to hold TX
+    // behind a 100 ms blocking RX read and turned this full-duplex link into
+    // an unreliable half-duplex one.
+    return uart_write_bytes(PORT, data.data(), data.size());
 }
 
 size_t SerialPort::read(char* buf, size_t len, uint32_t timeout_ms)
 {
     if (!started_ || len == 0) return 0;
 
-    if (!mutex_) return 0;
-    xSemaphoreTake(mutex_, portMAX_DELAY);
     int received = uart_read_bytes(PORT, buf, len, pdMS_TO_TICKS(timeout_ms));
-    xSemaphoreGive(mutex_);
     return received > 0 ? static_cast<size_t>(received) : 0;
 }
 
@@ -79,15 +73,10 @@ esp_err_t SerialPort::set_baud(uint32_t baud)
 {
     if (baud < MIN_BAUD || baud > MAX_BAUD) return ESP_ERR_INVALID_ARG;
 
-    if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
     if (started_) {
         esp_err_t err = uart_set_baudrate(PORT, baud);
-        if (err != ESP_OK) {
-            if (mutex_) xSemaphoreGive(mutex_);
-            return err;
-        }
+        if (err != ESP_OK) return err;
     }
-    if (mutex_) xSemaphoreGive(mutex_);
 
     baud_ = baud;
     // Says which of the two happened. It used to report the rate as set either

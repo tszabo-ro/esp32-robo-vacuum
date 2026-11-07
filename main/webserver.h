@@ -34,6 +34,7 @@ private:
     static esp_err_t handle_post_logout(httpd_req_t* req);
     static esp_err_t handle_post_password(httpd_req_t* req);
     static esp_err_t handle_get_status(httpd_req_t* req);
+    static esp_err_t handle_get_tasks(httpd_req_t* req);
     static esp_err_t handle_post_wifi(httpd_req_t* req);
     static esp_err_t handle_post_mqtt(httpd_req_t* req);
     static esp_err_t handle_post_serial(httpd_req_t* req);
@@ -157,6 +158,11 @@ private:
     // an allocation failure here is a panic reboot on the only way in.
     static constexpr size_t MAX_BODY_BYTES = 2048;
     static constexpr size_t MAX_WS_FRAME_BYTES = 4096;
+
+    // Task names are fixed by the firmware and FreeRTOS, but the number of
+    // tasks can vary with WiFi and MQTT state. Snapshot into a fixed array so
+    // a diagnostic request never allocates from a client-influenced size.
+    static constexpr UBaseType_t MAX_TASK_SNAPSHOT = 32;
 
     // Matches the server's socket budget: past this, a client is not being
     // served anyway, and the list is what an attacker would otherwise grow.

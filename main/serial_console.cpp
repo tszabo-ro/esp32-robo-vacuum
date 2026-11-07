@@ -11,9 +11,10 @@ constexpr size_t RX_CHUNK_BYTES = 256;
 SerialConsole::SerialConsole(SerialPort& port)
     : port_(port)
     , request_mutex_(xSemaphoreCreateMutex())
-    , response_stream_(xStreamBufferCreate(2048, 1))
+    , capture_mutex_(xSemaphoreCreateMutex())
+    , response_ready_(xSemaphoreCreateBinary())
 {
-    if (!request_mutex_ || !response_stream_) {
+    if (!request_mutex_ || !capture_mutex_ || !response_ready_) {
         ESP_LOGE(TAG, "Could not create request/response resources");
     }
 }
@@ -45,53 +46,89 @@ int SerialConsole::write(std::string_view data)
     return written;
 }
 
+esp_err_t SerialConsole::set_baud(uint32_t baud)
+{
+    if (request_mutex_) xSemaphoreTake(request_mutex_, portMAX_DELAY);
+    const esp_err_t err = port_.set_baud(baud);
+    if (request_mutex_) xSemaphoreGive(request_mutex_);
+    return err;
+}
+
 bool SerialConsole::request(std::string_view data, uint8_t response_end, char* response,
                             size_t response_capacity, size_t& response_length,
                             uint32_t timeout_ms)
 {
-    if (!request_mutex_ || !response_stream_ || !started() || data.empty()
+    if (!request_mutex_ || !capture_mutex_ || !response_ready_ || !started() || data.empty()
         || !response || response_capacity < 2) return false;
 
     xSemaphoreTake(request_mutex_, portMAX_DELAY);
-    xStreamBufferReset(response_stream_);
-    response_length = 0;
-    awaiting_response_ = true;
+    // Clear a completion from a previous request before publishing this
+    // caller's stack buffer to the receive task.
+    xSemaphoreTake(response_ready_, 0);
+    xSemaphoreTake(capture_mutex_, portMAX_DELAY);
+    response_buffer_ = response;
+    response_capacity_ = response_capacity;
+    response_length_ = 0;
+    response_end_ = response_end;
+    response_complete_ = false;
+    response_active_ = true;
+    xSemaphoreGive(capture_mutex_);
+
     if (port_.write(data) != static_cast<int>(data.size())) {
-        awaiting_response_ = false;
+        xSemaphoreTake(capture_mutex_, portMAX_DELAY);
+        response_active_ = false;
+        response_buffer_ = nullptr;
+        xSemaphoreGive(capture_mutex_);
         xSemaphoreGive(request_mutex_);
         return false;
     }
 
-    const TickType_t started = xTaskGetTickCount();
-    bool complete = false;
-    while (response_length + 1 < response_capacity) {
-        const TickType_t elapsed = xTaskGetTickCount() - started;
-        const uint32_t elapsed_ms = static_cast<uint32_t>(elapsed * portTICK_PERIOD_MS);
-        if (elapsed_ms >= timeout_ms) break;
-        const uint32_t remaining = timeout_ms - elapsed_ms;
-        char byte = 0;
-        if (xStreamBufferReceive(response_stream_, &byte, 1,
-                                 pdMS_TO_TICKS(remaining)) != 1) break;
-        if (static_cast<uint8_t>(byte) == response_end) {
-            complete = true;
-            break;
-        }
-        response[response_length++] = byte;
-    }
+    xSemaphoreTake(response_ready_, pdMS_TO_TICKS(timeout_ms));
+    xSemaphoreTake(capture_mutex_, portMAX_DELAY);
+    const bool complete = response_complete_;
+    response_length = response_length_;
     response[response_length] = '\0';
-    awaiting_response_ = false;
+    response_active_ = false;
+    response_buffer_ = nullptr;
+    xSemaphoreGive(capture_mutex_);
     xSemaphoreGive(request_mutex_);
     return complete;
 }
 
 void SerialConsole::broadcast(const char* data, size_t length)
 {
-    if (awaiting_response_.load() && response_stream_) {
-        xStreamBufferSend(response_stream_, data, length, 0);
-    }
+    capture_response(data, length);
     for (size_t i = 0; i < subscriber_count_; ++i) {
         subscribers_[i].callback(subscribers_[i].context, data, length);
     }
+}
+
+void SerialConsole::capture_response(const char* data, size_t length)
+{
+    if (!capture_mutex_ || !response_ready_) return;
+
+    bool ready = false;
+    xSemaphoreTake(capture_mutex_, portMAX_DELAY);
+    if (response_active_) {
+        for (size_t i = 0; i < length; ++i) {
+            if (static_cast<uint8_t>(data[i]) == response_end_) {
+                response_complete_ = true;
+                response_active_ = false;
+                ready = true;
+                break;
+            }
+            if (response_length_ + 1 >= response_capacity_) {
+                ESP_LOGW(TAG, "Robot response exceeded %u bytes",
+                         static_cast<unsigned>(response_capacity_));
+                response_active_ = false;
+                ready = true;
+                break;
+            }
+            response_buffer_[response_length_++] = data[i];
+        }
+    }
+    xSemaphoreGive(capture_mutex_);
+    if (ready) xSemaphoreGive(response_ready_);
 }
 
 void SerialConsole::receive_task(void* arg)

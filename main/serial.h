@@ -5,7 +5,6 @@
 #include "driver/uart.h"
 #include "esp_err.h"
 #include "hal/gpio_types.h"
-#include "freertos/semphr.h"
 
 // Low-level hardware UART byte transport. SerialConsole owns receiving,
 // request/response coordination and subscriber fanout above this layer.
@@ -47,5 +46,4 @@ private:
 
     uint32_t baud_ = DEFAULT_BAUD;
     bool started_ = false;
-    SemaphoreHandle_t mutex_ = nullptr;
 };

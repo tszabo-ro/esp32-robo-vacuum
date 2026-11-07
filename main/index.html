@@ -106,6 +106,7 @@ range knows it.
 <button class="active" data-tab="status">Status</button>
 <button data-tab="log">Log</button>
 <button data-tab="serial">Serial</button>
+<button data-tab="tasks">Tasks</button>
 <button data-tab="settings">Settings</button>
 </nav>
 
@@ -139,6 +140,17 @@ under Settings.
 </div>
 <div class="note" id="update-note">Check GitHub for a newer firmware release.</div>
 <div class="row"><span class="label">Free Heap</span><span id="heap">--</span></div>
+</div>
+</section>
+
+<section id="tasks">
+<div class="card">
+<h2>FreeRTOS Tasks</h2>
+<div class="note">Enabled tasks may be running, ready, or blocked waiting for
+work. A suspended task is intentionally disabled.</div>
+<div id="tasks-list"></div>
+<button class="plain-btn" id="refresh-tasks">Refresh</button>
+<div class="err" id="tasks-err"></div>
 </div>
 </section>
 
@@ -381,6 +393,42 @@ function tab(id,button){
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   $(id).classList.add('active');
   button.classList.add('active');
+  if(id==='tasks')refreshTasks();
+}
+
+/* --- Tasks --- */
+
+function renderTasks(tasks){
+  const list=$('tasks-list');
+  list.textContent='';
+  for(const task of tasks){
+    const row=document.createElement('div');
+    row.className='row';
+    const name=document.createElement('span');
+    name.className='label';
+    name.textContent=task.name||'unknown';
+    const value=document.createElement('span');
+    const dot=document.createElement('span');
+    dot.className='status-dot '+(task.enabled?'dot-on':'dot-off');
+    value.appendChild(dot);
+    value.appendChild(document.createTextNode((task.enabled?'Enabled — ':'Disabled — ')
+      +(task.state||'Unknown')));
+    row.appendChild(name);
+    row.appendChild(value);
+    list.appendChild(row);
+  }
+}
+
+function refreshTasks(){
+  $('tasks-err').textContent='';
+  fetch('/api/tasks').then(r=>{
+    if(r.status===401){showGate(false);return Promise.reject(new Error('signed out'))}
+    if(!r.ok)return Promise.reject(new Error('Could not read task state'));
+    return r.json();
+  }).then(result=>{
+    renderTasks(result.tasks||[]);
+    if(result.truncated)$('tasks-err').textContent='Task list is truncated';
+  }).catch(e=>{if(e.message!=='signed out')$('tasks-err').textContent=e.message});
 }
 
 /* --- WebSocket --- */
@@ -622,6 +670,7 @@ $('baud').addEventListener('change',setBaud);
 $('save-ws-auth').addEventListener('click',saveWsAuth);
 $('serial-clear').addEventListener('click',()=>{$('serial-output').textContent=''});
 $('serial-send').addEventListener('click',sendSerial);
+$('refresh-tasks').addEventListener('click',refreshTasks);
 $('serial-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendSerial()});
 $('save-wifi').addEventListener('click',saveWifi);
 $('save-ap').addEventListener('click',saveAp);

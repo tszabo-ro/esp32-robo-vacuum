@@ -171,7 +171,7 @@ esp_err_t WebServer::start()
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 17;
+    config.max_uri_handlers = 18;
     // ESP-IDF's HTTP server keeps three sockets for its listener and control
     // channel. The ESP32-C3 has ten LWIP sockets total, so the default seven
     // client sessions can consume every descriptor and leave OTA unable to
@@ -219,6 +219,7 @@ esp_err_t WebServer::start()
         {"/api/logout",   HTTP_POST, handle_post_logout,  false},
         {"/api/password", HTTP_POST, handle_post_password, false},
         {"/api/status",   HTTP_GET,  handle_get_status,   false},
+        {"/api/tasks",    HTTP_GET,  handle_get_tasks,    false},
         {"/api/wifi",     HTTP_POST, handle_post_wifi,    false},
         {"/api/mqtt",     HTTP_POST, handle_post_mqtt,    false},
         {"/api/serial",   HTTP_POST, handle_post_serial,  false},
@@ -868,6 +869,63 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
 
     char* json = cJSON_PrintUnformatted(root);
     esp_err_t ret = send_json(req, json ? json : R"({})");
+    cJSON_free(json);
+    cJSON_Delete(root);
+    return ret;
+}
+
+namespace {
+
+const char* task_state_name(eTaskState state)
+{
+    switch (state) {
+    case eRunning:   return "Running";
+    case eReady:     return "Ready";
+    case eBlocked:   return "Blocked";
+    case eSuspended: return "Suspended";
+    case eDeleted:   return "Deleted";
+    default:         return "Unknown";
+    }
+}
+
+bool task_enabled(eTaskState state)
+{
+    return state != eSuspended && state != eDeleted;
+}
+
+}  // namespace
+
+esp_err_t WebServer::handle_get_tasks(httpd_req_t* req)
+{
+    if (!allow_session(req, false)) return refusal_result(req);
+
+    TaskStatus_t snapshot[MAX_TASK_SNAPSHOT] = {};
+    const UBaseType_t count = uxTaskGetSystemState(snapshot, MAX_TASK_SNAPSHOT, nullptr);
+    const UBaseType_t total = uxTaskGetNumberOfTasks();
+
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        return send_status(req, "503 Service Unavailable", "Could not snapshot tasks");
+    }
+    cJSON* tasks = cJSON_AddArrayToObject(root, "tasks");
+    if (!tasks) {
+        cJSON_Delete(root);
+        return send_status(req, "503 Service Unavailable", "Could not snapshot tasks");
+    }
+
+    for (UBaseType_t i = 0; i < count; ++i) {
+        cJSON* task = cJSON_CreateObject();
+        if (!task) continue;
+        cJSON_AddStringToObject(task, "name", snapshot[i].pcTaskName);
+        cJSON_AddStringToObject(task, "state", task_state_name(snapshot[i].eCurrentState));
+        cJSON_AddBoolToObject(task, "enabled", task_enabled(snapshot[i].eCurrentState));
+        cJSON_AddNumberToObject(task, "priority", snapshot[i].uxCurrentPriority);
+        cJSON_AddItemToArray(tasks, task);
+    }
+    cJSON_AddBoolToObject(root, "truncated", total > count);
+
+    char* json = cJSON_PrintUnformatted(root);
+    esp_err_t ret = send_json(req, json ? json : R"({"tasks":[]})");
     cJSON_free(json);
     cJSON_Delete(root);
     return ret;

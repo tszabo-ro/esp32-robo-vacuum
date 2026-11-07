@@ -12,6 +12,11 @@ constexpr const char* TAG = "robot";
 constexpr uint32_t POLL_PERIOD_MS = 10000;
 constexpr uint32_t COMMAND_TIMEOUT_MS = 1800;
 constexpr size_t RESPONSE_BYTES = 1024;
+// A poll owns a 1 KiB response buffer and logs the full reply. The old 3 KiB
+// task stack left only a few bytes free once the UART request, parser and
+// newlib's logging locks were nested, causing a stack-protection panic after a
+// successful robot exchange.
+constexpr uint32_t POLL_TASK_STACK_BYTES = 6144;
 
 class Lock {
 public:
@@ -38,7 +43,8 @@ NeatoRobot::NeatoRobot(SerialConsole& console)
 void NeatoRobot::start()
 {
     if (task_started_) return;
-    task_started_ = xTaskCreate(poll_task, "robot_poll", 3072, this, 5, &poll_task_) == pdPASS;
+    task_started_ = xTaskCreate(poll_task, "robot_poll", POLL_TASK_STACK_BYTES, this, 5,
+                                &poll_task_) == pdPASS;
     if (!task_started_) ESP_LOGE(TAG, "Could not start the status poller");
 }
 
