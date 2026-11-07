@@ -83,6 +83,7 @@ WiFi details under Settings.</div>
      this is a convenience, not the control. -->
 <div id="gate" style="display:none">
 <div class="card">
+<form id="gate-form">
 <h2 id="gate-title">Sign in</h2>
 <div id="setup-note" class="note" style="display:none">
 This device has not been set up yet. Choose a password for this interface, and a
@@ -93,9 +94,10 @@ range knows it.
 <div class="field"><label>Interface password</label><input id="gate-pass" type="password" autocomplete="current-password"></div>
 <div class="field" id="gate-confirm-field" style="display:none"><label>Confirm password</label><input id="gate-confirm" type="password" autocomplete="new-password"></div>
 <div class="field" id="gate-ap-field" style="display:none"><label>Recovery network passphrase (8+ characters)</label><input id="gate-ap" type="password" autocomplete="new-password"></div>
-<button class="save-btn" id="gate-submit">Sign in</button>
+<button class="save-btn" id="gate-submit" type="submit">Sign in</button>
 <div class="err" id="gate-err"></div>
 <div class="note" id="gate-addr" style="margin-top:10px"></div>
+</form>
 </div>
 </div>
 
@@ -615,10 +617,7 @@ document.querySelectorAll('[data-robot-cmd]').forEach(b=>{
   b.addEventListener('click',()=>robotCmd(b.dataset.robotCmd));
 });
 $('boot-retry').addEventListener('click',()=>{bootAttempt=0;boot()});
-$('gate-submit').addEventListener('click',submitGate);
-$('gate-pass').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
-$('gate-confirm').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
-$('gate-ap').addEventListener('keydown',e=>{if(e.key==='Enter')submitGate()});
+$('gate-form').addEventListener('submit',e=>{e.preventDefault();submitGate()});
 $('baud').addEventListener('change',setBaud);
 $('save-ws-auth').addEventListener('click',saveWsAuth);
 $('serial-clear').addEventListener('click',()=>{$('serial-output').textContent=''});
