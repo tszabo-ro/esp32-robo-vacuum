@@ -139,13 +139,14 @@ const char* diagnostic_message(int code)
     }
 }
 
-bool parse_state(std::string_view response, char* out, size_t out_size)
+static bool parse_labeled_state(std::string_view response, std::string_view state_label,
+                                char* out, size_t out_size)
 {
     if (!out || out_size == 0) return false;
     out[0] = '\0';
-    const size_t label = find(response, STATE_LABEL);
+    const size_t label = find(response, state_label);
     if (label == std::string_view::npos) return false;
-    size_t start = label + STATE_LABEL.size();
+    size_t start = label + state_label.size();
     while (start < response.size() && (response[start] == ' ' || response[start] == '\t')) ++start;
     size_t end = response.find_first_of("\r\n", start);
     if (end == std::string_view::npos) end = response.size();
@@ -160,22 +161,45 @@ bool parse_state(std::string_view response, char* out, size_t out_size)
     return true;
 }
 
-bool parse_battery_percent(std::string_view response, int& out)
+bool parse_state(std::string_view response, char* out, size_t out_size)
 {
-    const size_t label = find(response, FUEL_LABEL);
+    return parse_labeled_state(response, STATE_LABEL, out, out_size);
+}
+
+bool parse_ui_state(std::string_view response, char* out, size_t out_size)
+{
+    return parse_labeled_state(response, "Current UI State is:", out, out_size);
+}
+
+static bool parse_csv_number(std::string_view response, std::string_view field, unsigned maximum, int& out)
+{
+    const size_t label = find(response, field);
     if (label == std::string_view::npos) return false;
-    size_t pos = label + FUEL_LABEL.size();
+    size_t pos = label + field.size();
     while (pos < response.size() && (response[pos] == ' ' || response[pos] == '\t')) ++pos;
     if (pos == response.size() || response[pos] < '0' || response[pos] > '9') return false;
 
     unsigned value = 0;
     while (pos < response.size() && response[pos] >= '0' && response[pos] <= '9') {
         value = value * 10 + static_cast<unsigned>(response[pos++] - '0');
-        if (value > 100) return false;
+        if (value > maximum) return false;
     }
     if (pos < response.size() && response[pos] != ',' && response[pos] != ' '
         && response[pos] != '\t' && response[pos] != '\r' && response[pos] != '\n') return false;
     out = static_cast<int>(value);
+    return true;
+}
+
+bool parse_battery_percent(std::string_view response, int& out)
+{
+    return parse_csv_number(response, FUEL_LABEL, 100, out);
+}
+
+bool parse_external_power(std::string_view response, bool& out)
+{
+    int value = 0;
+    if (!parse_csv_number(response, "ExtPwrPresent,", 1, value)) return false;
+    out = value == 1;
     return true;
 }
 

@@ -185,9 +185,11 @@ bool NeatoRobot::poll_once()
 {
     char response[RESPONSE_BYTES];
     char robot_state[sizeof(status_.state)];
+    char ui_state[sizeof(status_.ui_state)];
     if (!exchange("GetState", response, sizeof(response)))
         return false;
     if (!robot_response::parse_state(response, robot_state, sizeof(robot_state))) return false;
+    if (!robot_response::parse_ui_state(response, ui_state, sizeof(ui_state))) return false;
 
     vTaskDelay(pdMS_TO_TICKS(50));
     if (!exchange("GetCharger", response, sizeof(response)))
@@ -195,6 +197,8 @@ bool NeatoRobot::poll_once()
 
     int battery = 0;
     if (!robot_response::parse_battery_percent(response, battery)) return false;
+    bool external_power = false;
+    if (!robot_response::parse_external_power(response, external_power)) return false;
 
     robot_response::Diagnostic error, alert;
     const bool errors_available = exchange("GetErr", response, sizeof(response))
@@ -207,6 +211,8 @@ bool NeatoRobot::poll_once()
         status_.alert = alert;
     }
     std::strcpy(status_.state, robot_state);
+    std::strcpy(status_.ui_state, ui_state);
+    status_.external_power = external_power;
     status_.battery_percent = battery;
     status_.available = true;
     last_update_ = xTaskGetTickCount();

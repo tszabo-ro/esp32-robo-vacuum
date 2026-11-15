@@ -1,5 +1,6 @@
 #include "mqtt.h"
 #include "text_util.h"
+#include "robot_mqtt.h"
 
 #include <string>
 #include <string_view>
@@ -44,16 +45,28 @@ bool scheme_is_supported(std::string_view uri)
     return false;
 }
 
+void add_robot_device(cJSON* config)
+{
+    cJSON* device = cJSON_AddObjectToObject(config, "device");
+    cJSON* identifiers = cJSON_AddArrayToObject(device, "identifiers");
+    cJSON_AddItemToArray(identifiers, cJSON_CreateString(MqttClient::VACUUM_ID));
+    cJSON_AddStringToObject(device, "name", "Neato D5");
+    cJSON_AddStringToObject(device, "manufacturer", "Neato Robotics");
+    cJSON_AddStringToObject(device, "model", "Botvac D5");
+}
+
 }  // namespace
 
-MqttClient::MqttClient(Vacuum& vacuum)
-    : vacuum_(vacuum)
+MqttClient::MqttClient(NeatoRobot& robot)
+    : robot_(robot)
+    , command_queue_(xQueueCreate(4, sizeof(const char*)))
     , mutex_(xSemaphoreCreateMutex())
     , state_topic_(std::string(VACUUM_ID) + "/state")
     , command_topic_(std::string(VACUUM_ID) + "/command")
     , availability_topic_(std::string(VACUUM_ID) + "/availability")
 {
     if (!mutex_) ESP_LOGE(TAG, "Could not create the client mutex");
+    if (!command_queue_) ESP_LOGE(TAG, "Could not create the robot command queue");
 }
 
 static esp_err_t load_broker_uri(std::string& uri)
@@ -124,6 +137,7 @@ esp_err_t MqttClient::init()
 
 esp_err_t MqttClient::start()
 {
+    if (!command_queue_) return ESP_ERR_NO_MEM;
     esp_mqtt_client_handle_t client = nullptr;
     {
         Lock lock(mutex_);
@@ -137,7 +151,7 @@ esp_err_t MqttClient::start()
     // Created at most once for the life of the device. The publisher no-ops
     // while there is no client, so a broker change does not need a new one.
     if (!publish_task_
-        && xTaskCreate(publish_task, "mqtt_pub", 4096, this, 5, &publish_task_) != pdPASS) {
+        && xTaskCreate(publish_task, "mqtt_pub", 6144, this, 5, &publish_task_) != pdPASS) {
         publish_task_ = nullptr;
         ESP_LOGE(TAG, "Could not start the publisher task");
         return ESP_ERR_NO_MEM;
@@ -207,8 +221,9 @@ void MqttClient::on_connected(esp_mqtt_client_handle_t client)
     connected_ = true;
 
     cJSON* config = cJSON_CreateObject();
-    cJSON_AddStringToObject(config, "name", "Sim Vacuum");
+    cJSON_AddStringToObject(config, "name", "Neato D5");
     cJSON_AddStringToObject(config, "unique_id", VACUUM_ID);
+    add_robot_device(config);
     cJSON_AddStringToObject(config, "command_topic", command_topic_.c_str());
     cJSON_AddStringToObject(config, "state_topic", state_topic_.c_str());
     cJSON_AddStringToObject(config, "json_attributes_topic", state_topic_.c_str());
@@ -216,11 +231,10 @@ void MqttClient::on_connected(esp_mqtt_client_handle_t client)
     cJSON_AddStringToObject(config, "payload_available", "online");
     cJSON_AddStringToObject(config, "payload_not_available", "offline");
 
-    // Only what Vacuum::command actually accepts. "pause" was advertised here
-    // and implemented nowhere, so pressing Pause in Home Assistant logged an
-    // unknown command and did nothing.
+    // Battery is an attribute; it is not a supported_features entry in HA's
+    // current MQTT vacuum schema. Advertise only implemented robot actions.
     cJSON* features = cJSON_AddArrayToObject(config, "supported_features");
-    for (auto feature : {"start", "stop", "return_home", "battery"}) {
+    for (auto feature : {"start", "stop", "return_home", "status", "clean_spot"}) {
         cJSON_AddItemToArray(features, cJSON_CreateString(feature));
     }
 
@@ -232,7 +246,26 @@ void MqttClient::on_connected(esp_mqtt_client_handle_t client)
     }
     cJSON_Delete(config);
 
-    esp_mqtt_client_publish(client, availability_topic_.c_str(), "online", 0, 1, 1);
+    // Current HA versions expose vacuum battery as a separate sensor. Keep
+    // battery_level in the vacuum attributes as well for existing dashboards.
+    cJSON* battery = cJSON_CreateObject();
+    cJSON_AddStringToObject(battery, "name", "Neato D5 Battery");
+    cJSON_AddStringToObject(battery, "unique_id", "sim_vacuum_battery");
+    add_robot_device(battery);
+    cJSON_AddStringToObject(battery, "state_topic", state_topic_.c_str());
+    cJSON_AddStringToObject(battery, "availability_topic", availability_topic_.c_str());
+    cJSON_AddStringToObject(battery, "device_class", "battery");
+    cJSON_AddStringToObject(battery, "state_class", "measurement");
+    cJSON_AddStringToObject(battery, "unit_of_measurement", "%");
+    cJSON_AddStringToObject(battery, "value_template", "{{ value_json.battery_level }}");
+    char* battery_json = cJSON_PrintUnformatted(battery);
+    if (battery_json) {
+        esp_mqtt_client_publish(client, "homeassistant/sensor/sim_vacuum_battery/config", battery_json, 0, 1, 1);
+        cJSON_free(battery_json);
+    }
+    cJSON_Delete(battery);
+
+    esp_mqtt_client_publish(client, availability_topic_.c_str(), "offline", 0, 1, 1);
     esp_mqtt_client_subscribe(client, command_topic_.c_str(), 1);
 }
 
@@ -246,9 +279,10 @@ void MqttClient::on_data(std::string_view topic, std::string_view data)
         return;
     }
 
-    if (!vacuum_.command(data)) {
-        ESP_LOGW(TAG, "Unknown command: %.*s", static_cast<int>(data.size()), data.data());
-    }
+    const char* action = robot_mqtt::command_action(data);
+    if (!action) { ESP_LOGW(TAG, "Rejected unsupported MQTT robot command"); return; }
+    if (!command_queue_ || xQueueSend(command_queue_, &action, 0) != pdTRUE)
+        ESP_LOGW(TAG, "Robot command queue full; MQTT command dropped");
 }
 
 void MqttClient::publish_state()
@@ -256,11 +290,33 @@ void MqttClient::publish_state()
     Lock lock(mutex_);
     if (!client_ || !connected_) return;
 
-    auto s = vacuum_.status();
+    const auto s = robot_.status();
+    const bool available = s.available && s.age_seconds <= 5;
+    esp_mqtt_client_publish(client_, availability_topic_.c_str(), available ? "online" : "offline", 0, 1, 1);
+    if (!available) return;
 
     cJSON* state = cJSON_CreateObject();
-    cJSON_AddStringToObject(state, "state", Vacuum::state_to_string(s.state));
-    cJSON_AddNumberToObject(state, "battery_level", s.battery_level);
+    const char* activity = robot_mqtt::activity(s.ui_state, s.state, s.external_power,
+                                               s.errors_available && s.error.code != 200);
+    if (activity) cJSON_AddStringToObject(state, "state", activity);
+    else cJSON_AddNullToObject(state, "state");
+    cJSON_AddNumberToObject(state, "battery_level", s.battery_percent);
+    cJSON_AddStringToObject(state, "robot_state", s.state);
+    cJSON_AddStringToObject(state, "ui_state", s.ui_state);
+    cJSON_AddBoolToObject(state, "errors_available", s.errors_available);
+    if (s.errors_available) {
+        cJSON_AddNumberToObject(state, "error_code", s.error.code);
+        cJSON_AddStringToObject(state, "error", s.error.token);
+        cJSON_AddStringToObject(state, "error_message", robot_response::diagnostic_message(s.error.code));
+        cJSON_AddNumberToObject(state, "alert_code", s.alert.code);
+        cJSON_AddStringToObject(state, "alert", s.alert.token);
+    } else {
+        cJSON_AddNullToObject(state, "error_code");
+        cJSON_AddStringToObject(state, "error", "");
+        cJSON_AddStringToObject(state, "error_message", "Error status unavailable");
+        cJSON_AddNullToObject(state, "alert_code");
+        cJSON_AddStringToObject(state, "alert", "");
+    }
 
     char* json = cJSON_PrintUnformatted(state);
     if (json) {
@@ -282,11 +338,13 @@ void MqttClient::event_handler(void* arg, esp_event_base_t, int32_t id, void* da
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Disconnected from broker");
         self->connected_ = false;
+        if (self->command_queue_) xQueueReset(self->command_queue_);
         break;
     case MQTT_EVENT_DATA:
         // A payload split across events carries a null topic on every part
         // after the first, which there is then no way to attribute.
-        if (event->topic && event->topic_len > 0) {
+        if (!event->retain && event->topic && event->topic_len > 0 && event->data && event->data_len > 0
+            && event->current_data_offset == 0 && event->data_len == event->total_data_len) {
             self->on_data({event->topic, static_cast<size_t>(event->topic_len)},
                           {event->data, static_cast<size_t>(event->data_len)});
         }
@@ -301,7 +359,13 @@ void MqttClient::publish_task(void* arg)
     auto* self = static_cast<MqttClient*>(arg);
 
     while (true) {
+        const char* action = nullptr;
+        if (xQueueReceive(self->command_queue_, &action, pdMS_TO_TICKS(PUBLISH_PERIOD_MS)) == pdTRUE) {
+            const auto s = self->robot_.status();
+            if (!self->connected_ || !s.available || s.age_seconds > 5)
+                ESP_LOGW(TAG, "MQTT robot command dropped: robot or broker unavailable");
+            else if (!self->robot_.command(action)) ESP_LOGW(TAG, "MQTT robot command failed: %s", action);
+        }
         self->publish_state();
-        vTaskDelay(pdMS_TO_TICKS(PUBLISH_PERIOD_MS));
     }
 }

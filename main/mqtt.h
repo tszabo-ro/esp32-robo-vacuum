@@ -9,11 +9,12 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mqtt_client.h"
-#include "vacuum.h"
+#include "robot.h"
+#include "freertos/queue.h"
 
 class MqttClient {
 public:
-    explicit MqttClient(Vacuum& vacuum);
+    explicit MqttClient(NeatoRobot& robot);
 
     esp_err_t init();
     esp_err_t start();
@@ -30,6 +31,7 @@ public:
     // string that had just been freed underneath it.
     std::string broker_uri() const;
 
+    // Preserve the existing discovery identity/topics for installed HA entities.
     static constexpr const char* VACUUM_ID = "sim_vacuum";
 
 private:
@@ -40,7 +42,10 @@ private:
     static void event_handler(void* arg, esp_event_base_t base, int32_t id, void* data);
     static void publish_task(void* arg);
 
-    Vacuum& vacuum_;
+    NeatoRobot& robot_;
+    // Only pointers to fixed allowlisted action literals are queued. Never
+    // block MQTT's event handler on a UART reply or a robot diagnostic test.
+    QueueHandle_t command_queue_ = nullptr;
 
     // Guards client_ and broker_uri_ against the publisher task and the web
     // server's task. Deliberately never taken from the MQTT event task:

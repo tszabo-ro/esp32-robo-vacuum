@@ -10,7 +10,6 @@
 #include "auth.h"
 #include "wifi.h"
 #include "console.h"
-#include "vacuum.h"
 #include "mqtt.h"
 #include "webserver.h"
 #include "ota.h"
@@ -280,13 +279,12 @@ extern "C" void app_main()
     factory.start();
 
     // app_main returns once setup is done, so these must outlive its stack.
-    static Vacuum vacuum;
-    static MqttClient mqtt(vacuum);
     static SerialPort uart;
     static SerialConsole serial(uart);
     static NeatoRobot robot(serial);
+    static MqttClient mqtt(robot);
     static OtaUpdater ota(robot);
-    static WebServer web(vacuum, mqtt, serial, robot, ota);
+    static WebServer web(mqtt, serial, robot, ota);
     static NetworkServices services{mqtt, web};
 
     // Independent of WiFi, so the UART is live even with no network.
@@ -308,7 +306,6 @@ extern "C" void app_main()
     if (xTaskCreate(console_task, "console", 4096, &ota, 5, nullptr) != pdPASS) {
         ESP_LOGE(TAG, "Could not start the console task");
     }
-    vacuum.start_simulation();
 
     // Started before wifi_init_sta() so the services come up as soon as the
     // connection lands; wifi_init_sta() itself blocks until connect or timeout.

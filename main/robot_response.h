@@ -25,9 +25,11 @@ LdsScanSummary summarize_lds_scan(std::string_view response);
 
 // Extract the current robot state into a bounded NUL-terminated buffer.
 bool parse_state(std::string_view response, char* out, size_t out_size);
+bool parse_ui_state(std::string_view response, char* out, size_t out_size);
 
 // Extract FuelPercent (0-100) from a GetCharger response.
 bool parse_battery_percent(std::string_view response, int& out);
+bool parse_external_power(std::string_view response, bool& out);
 
 // Extract the complete serial-number field from GetVersion into a bounded,
 // NUL-terminated buffer.

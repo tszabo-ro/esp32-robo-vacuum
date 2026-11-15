@@ -12,6 +12,8 @@
 
 struct RobotStatus {
     char state[64];
+    char ui_state[64] = {};
+    bool external_power = false;
     int battery_percent = -1;
     bool available;
     uint32_t age_seconds;

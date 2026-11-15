@@ -14,7 +14,6 @@
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "auth.h"
-#include "vacuum.h"
 #include "mqtt.h"
 #include "ota.h"
 #include "serial_console.h"
@@ -22,7 +21,7 @@
 
 class WebServer {
 public:
-    WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialConsole& serial, NeatoRobot& robot, OtaUpdater& ota);
+    WebServer(MqttClient& mqtt, SerialConsole& serial, NeatoRobot& robot, OtaUpdater& ota);
     esp_err_t start();
 
 private:
@@ -183,7 +182,6 @@ private:
     // costs a bounded amount of heap before frames start being dropped.
     static constexpr size_t WS_TX_QUEUE_DEPTH = 12;
 
-    Vacuum& vacuum_;
     MqttClient& mqtt_;
     SerialConsole& serial_;
     NeatoRobot& robot_;

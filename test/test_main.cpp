@@ -14,6 +14,7 @@
 #include "firmware_version.h"
 #include "ota_release.h"
 #include "robot_response.h"
+#include "robot_mqtt.h"
 #include "text_util.h"
 
 namespace {
@@ -544,6 +545,44 @@ void test_lds_scan_summary()
     CHECK(robot_response::summarize_lds_scan(full).valid_points == 360);
 }
 
+void test_robot_mqtt()
+{
+    char ui[64];
+    CHECK(robot_response::parse_ui_state("Current UI State is: UIMGR_STATE_STANDBY\r\n"
+        "Current Robot State is: ST_C_Standby\r\n", ui, sizeof(ui)));
+    CHECK_STR(ui, "UIMGR_STATE_STANDBY");
+    CHECK(!robot_response::parse_ui_state("Current Robot State is: ST_C_Standby", ui, sizeof(ui)));
+    bool power = false;
+    CHECK(robot_response::parse_external_power("FuelPercent,57\r\nExtPwrPresent,1\r\n", power));
+    CHECK(power);
+    CHECK(robot_response::parse_external_power("ExtPwrPresent,0", power));
+    CHECK(!power);
+    CHECK(!robot_response::parse_external_power("ExtPwrPresent,2", power));
+    CHECK(!robot_response::parse_external_power("ExtPwrPresent,1garbage", power));
+    CHECK(!robot_response::parse_external_power("FuelPercent,57", power));
+    CHECK_STR(robot_mqtt::command_action("start"), "start");
+    CHECK_STR(robot_mqtt::command_action("stop"), "stop");
+    CHECK_STR(robot_mqtt::command_action("return_to_base"), "dock");
+    CHECK_STR(robot_mqtt::command_action("clean_spot"), "spot");
+    CHECK(robot_mqtt::command_action("pause") == nullptr);
+    CHECK(robot_mqtt::command_action("SetMotor LeftWheelEnable") == nullptr);
+    CHECK(robot_mqtt::command_action("start\n") == nullptr);
+    CHECK(robot_mqtt::command_action(std::string_view("start\0stop", 10)) == nullptr);
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_STANDBY", "ST_C_Standby", false, false), "idle");
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_STANDBY", "ST_C_Standby", true, false), "docked");
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_HOUSECLEANINGRUNNING", "ST_F3_InteriorCleaning", false, false), "cleaning");
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_SPOTCLEANINGRUNNING", "ST_G3_InteriorCleaning", false, false), "cleaning");
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_DOCKINGRUNNING", "ST_F_Cleaning", false, false), "returning");
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_HOUSECLEANINGPAUSED", "ST_C_Standby", false, false), "paused");
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_CLEANINGSUSPENDED", "ST_M1_Charging_Cleaning", true, false), "docked");
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_CLEANINGSUSPENDED", "ST_F5_PickedUp", false, false), "paused");
+    CHECK_STR(robot_mqtt::activity("UIMGR_STATE_STANDBY", "ST_C_Standby", true, true), "error");
+    CHECK_STR(robot_mqtt::activity("", "ST_F7_CleaningError", false, false), "error");
+    CHECK(robot_mqtt::activity("UIMGR_STATE_TESTMODE", "ST_T_Test", false, false) == nullptr);
+    CHECK(robot_mqtt::activity("UIMGR_STATE_FUTURE", "ST_Future", false, false) == nullptr);
+    CHECK(robot_mqtt::activity("UIMGR_STATE_FUTURE", "ST_Future", true, false) == nullptr);
+}
+
 }  // namespace
 
 int main()
@@ -563,6 +602,7 @@ int main()
     test_robot_set_event_protocol();
     test_robot_errors();
     test_lds_scan_summary();
+    test_robot_mqtt();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

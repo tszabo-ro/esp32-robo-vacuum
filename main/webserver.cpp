@@ -1,6 +1,7 @@
 #include "webserver.h"
 #include "auth.h"
 #include "text_util.h"
+#include "robot_mqtt.h"
 #include "wifi.h"
 
 #include <algorithm>
@@ -138,9 +139,8 @@ bool read_header(httpd_req_t* req, const char* field, std::string& out)
 
 }  // namespace
 
-WebServer::WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialConsole& serial, NeatoRobot& robot, OtaUpdater& ota)
-    : vacuum_(vacuum)
-    , mqtt_(mqtt)
+WebServer::WebServer(MqttClient& mqtt, SerialConsole& serial, NeatoRobot& robot, OtaUpdater& ota)
+    : mqtt_(mqtt)
     , serial_(serial)
     , robot_(robot)
     , ota_(ota)
@@ -785,7 +785,6 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     if (!allow_session(req, false)) return refusal_result(req);
 
     auto* self = static_cast<WebServer*>(req->user_ctx);
-    auto [state, battery] = self->vacuum_.status();
 
     wifi_ap_record_t ap = {};
     bool wifi_connected = wifi_is_connected();
@@ -833,14 +832,17 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     cJSON_AddBoolToObject(websocket, "authentication_required",
                           Auth::websocket_auth_required());
 
-    cJSON* vac = cJSON_AddObjectToObject(root, "vacuum");
-    cJSON_AddStringToObject(vac, "state", Vacuum::state_to_string(state));
-    cJSON_AddNumberToObject(vac, "battery", battery);
-
     const RobotStatus robot_status = self->robot_.status();
+    cJSON* vac = cJSON_AddObjectToObject(root, "vacuum");
+    const char* activity = robot_mqtt::activity(robot_status.ui_state, robot_status.state,
+        robot_status.external_power, robot_status.errors_available && robot_status.error.code != 200);
+    if (activity && robot_status.available) cJSON_AddStringToObject(vac, "state", activity);
+    else cJSON_AddNullToObject(vac, "state");
+    cJSON_AddNumberToObject(vac, "battery", robot_status.battery_percent);
     cJSON* robot = cJSON_AddObjectToObject(root, "robot");
     cJSON_AddBoolToObject(robot, "available", robot_status.available);
     cJSON_AddStringToObject(robot, "state", robot_status.state);
+    cJSON_AddStringToObject(robot, "ui_state", robot_status.ui_state);
     cJSON_AddNumberToObject(robot, "battery", robot_status.battery_percent);
     cJSON_AddNumberToObject(robot, "age_seconds", robot_status.age_seconds);
     cJSON_AddBoolToObject(robot, "errors_available", robot_status.errors_available);
@@ -1062,7 +1064,10 @@ esp_err_t WebServer::handle_post_command(httpd_req_t* req)
     const char* cmd = string_field(doc.get(), "command", MAX_COMMAND);
     if (!cmd) return bad_request(req, "Missing command");
 
-    if (!self->vacuum_.command(cmd)) return bad_request(req, "Unknown command");
+    const char* action = robot_mqtt::command_action(cmd);
+    if (!action) return bad_request(req, "Unknown command");
+    if (!self->robot_.command(action))
+        return send_status(req, "503 Service Unavailable", "Robot did not respond to the command");
     return send_json(req, R"({"ok":true})");
 }
 

@@ -9,11 +9,37 @@ ESP32-C3 SuperMini based controller for Neato D5 robot vacuum, enabling Home Ass
 - OTA updates over HTTPS
 - WiFi configuration, with a fallback access point for recovery
 
-**MQTT vacuum state is still simulated.** `main/vacuum.cpp` remains an in-memory
-state machine for Home Assistant. The web Status page now polls `GetState` and
-`GetCharger` over the robot UART and can issue Start, Spot clean, and Stop
-commands. Return-to-base is not yet wired because the Neato `SetEvent` command
-requires a robot-specific SKey.
+Home Assistant and the web interface use the actual robot over UART. `GetState`,
+`GetCharger`, and `GetErr` provide activity, battery, dock power, and diagnostics;
+controls use authenticated Neato `SetEvent` commands. The simulator task is no
+longer started or linked into firmware.
+
+### Home Assistant MQTT
+
+Configure the broker URI in Settings. Discovery publishes a **Neato D5** vacuum
+and **Neato D5 Battery** sensor. The legacy `sim_vacuum` discovery identity and
+topic prefix are retained so existing vacuum entities and automations remain
+associated with the controller; their data now comes from the robot.
+
+- `sim_vacuum/command`: `start`, `stop`, `return_to_base`, or `clean_spot`.
+  Retained command replay, unsupported payloads, and fragmented messages are
+  rejected; a bounded queue executes UART operations
+  outside MQTT's event handler. Commands are dropped if the broker or robot is
+  unavailable when they are processed.
+- `sim_vacuum/state`: retained JSON with `state`, `battery_level`, `robot_state`,
+  `ui_state`, `errors_available`, `error_code`, `error`, `error_message`,
+  `alert_code`, and `alert`. Unknown activity is JSON `null`. Error fields are
+  cleared/marked unavailable when the latest diagnostic query failed.
+- `sim_vacuum/availability`: retained `online` only with a valid robot snapshot
+  no more than five seconds old; otherwise `offline`. The MQTT last will also
+  marks it offline if the controller disconnects. Snapshots publish every two
+  seconds and after queued commands.
+
+Activity uses the robot's UI state to distinguish cleaning, paused, and returning;
+external power identifies docking while idle or recharging. Active robot errors
+take priority. Pause/resume, fan speed, and locate are not advertised in this
+first integration. The old authenticated `/api/command` endpoint also forwards
+the same command vocabulary to the actual robot.
 
 ## Hardware
 - ESP32-C3 SuperMini
@@ -473,8 +499,8 @@ point, OTA over HTTPS, MQTT with Home Assistant discovery, live Neato status and
 basic controls on the web Status page, the serial bridge, and a password-protected
 web interface.
 
-Next: replace the simulated MQTT vacuum with real Neato state and command
-integration, including authenticated return-to-base support.
+Next: validate real-robot MQTT discovery, state updates, and control end to end
+with Home Assistant, then extend the supported robot actions.
 
 ## License
 TBD
