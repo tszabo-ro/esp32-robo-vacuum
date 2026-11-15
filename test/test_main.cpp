@@ -77,6 +77,8 @@ void test_escape_serial()
     // Newline and tab survive; a carriage return is dropped.
     CHECK_STR(text::escape_serial("a\nb\tc", 5), "a\nb\tc");
     CHECK_STR(text::escape_serial("a\r\nb", 4), "a\nb");
+    CHECK_STR(text::escape_serial("reply\r\n\x1a\x1a", 9), "reply\n");
+    CHECK_STR(text::escape_serial("\x1a", 1), "");
 
     // A NUL must not truncate anything, which is the reason this exists.
     CHECK_STR(text::escape_serial("a\0b", 3), "a\\x00b");

@@ -37,9 +37,9 @@ std::string escape_serial(const char* data, size_t len)
         const auto c = static_cast<unsigned char>(data[i]);
         if (c == '\n' || c == '\t' || (c >= 0x20 && c < 0x7f)) {
             out.push_back(static_cast<char>(c));
-        } else if (c == '\r') {
-            // Dropped: the browser appends its own line breaks, and a bare CR
-            // would otherwise show up as an escape in the middle of a line.
+        } else if (c == '\r' || c == 0x1a) {
+            // CR is redundant in the browser; Ctrl-Z frames Neato responses
+            // (sometimes twice) and must not appear as terminal text.
         } else {
             out += "\\x";
             out.push_back(HEX[c >> 4]);

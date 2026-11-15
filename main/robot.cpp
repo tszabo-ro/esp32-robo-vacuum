@@ -12,6 +12,8 @@ constexpr const char* TAG = "robot";
 constexpr uint32_t POLL_PERIOD_MS = 10000;
 constexpr uint32_t COMMAND_TIMEOUT_MS = 1800;
 constexpr size_t RESPONSE_BYTES = 1024;
+// D5 GetVersion includes battery and hardware metadata and exceeds 1 KiB.
+constexpr size_t VERSION_RESPONSE_BYTES = 2048;
 constexpr size_t COMMAND_BYTES = 128;
 // A poll owns a 1 KiB response buffer and logs the full reply. The old 3 KiB
 // task stack left only a few bytes free once the UART request, parser and
@@ -109,7 +111,7 @@ bool NeatoRobot::command(const char* action)
 bool NeatoRobot::ensure_set_event_key(SerialConsole::Traffic traffic)
 {
     if (set_event_key_[0] != '\0') return true;
-    char response[RESPONSE_BYTES];
+    char response[VERSION_RESPONSE_BYTES];
     char serial_number[96];
     if (!exchange("GetVersion", response, sizeof(response), traffic)) return false;
     if (!robot_response::parse_serial_number(response, serial_number, sizeof(serial_number))) return false;
