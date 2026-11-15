@@ -3,6 +3,10 @@
 #include "wifi.h"
 
 #include <string>
+#include <cstdio>
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
+#include "freertos/task.h"
 #include "esp_console.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -12,6 +16,62 @@ static constexpr const char* TAG = "console";
 
 // Set by console_init; the console outlives neither app_main nor the updater.
 static OtaUpdater* s_ota = nullptr;
+
+// IDF 5.3's linenoise fallback loops on EOF without blocking when USB is
+// disconnected. At priority 2 it starves IDLE, which must reclaim the stacks
+// of self-deleted tasks (including each 12 KiB ota_check worker).
+static void run_usb_console()
+{
+    char line[256] = {};
+    size_t used = 0;
+    bool overflow = false;
+    bool prompt_needed = true;
+    while (true) {
+        if (!usb_serial_jtag_is_connected()) {
+            used = 0;
+            overflow = false;
+            prompt_needed = true;
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        if (prompt_needed) {
+            std::fputs("\r\nneato> ", stdout);
+            std::fflush(stdout);
+            prompt_needed = false;
+        }
+        char c;
+        if (usb_serial_jtag_read_bytes(&c, 1, pdMS_TO_TICKS(100)) <= 0) {
+            // Also block on driver errors, not just an empty RX queue.
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (c == '\r' || c == '\n') {
+            if (!used && !overflow) continue; // Includes the LF of CRLF.
+            std::fputc('\n', stdout);
+            if (overflow) {
+                std::puts("Command too long; discarded");
+            } else {
+                line[used] = '\0';
+                int command_result = 0;
+                const esp_err_t err = esp_console_run(line, &command_result);
+                if (err == ESP_ERR_NOT_FOUND) std::puts("Unrecognized command");
+                else if (err != ESP_OK) std::printf("Console error: %s\n", esp_err_to_name(err));
+                else if (command_result != 0) std::printf("Command failed: %d\n", command_result);
+            }
+            used = 0;
+            overflow = false;
+            prompt_needed = true;
+        } else if ((c == '\b' || c == 0x7f) && !overflow) {
+            if (used) { --used; std::fputs("\b \b", stdout); }
+        } else if (c >= ' ' && c < 0x7f && !overflow) {
+            if (used + 1 < sizeof(line)) {
+                line[used++] = c;
+                std::fputc(c, stdout);
+            } else overflow = true;
+        }
+        std::fflush(stdout);
+    }
+}
 
 static struct {
     struct arg_str* ssid;
@@ -118,9 +178,10 @@ void console_init(OtaUpdater& ota)
 {
     s_ota = &ota;
 
-    esp_console_repl_t* repl = nullptr;
-    esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-    repl_config.prompt = "neato> ";
+    esp_console_config_t config = ESP_CONSOLE_CONFIG_DEFAULT();
+    config.max_cmdline_length = 256;
+    ESP_ERROR_CHECK(esp_console_init(&config));
+    ESP_ERROR_CHECK(esp_console_register_help_command());
 
     wifi_set_args.ssid = arg_str1(nullptr, nullptr, "<ssid>", "WiFi SSID");
     wifi_set_args.password = arg_str1(nullptr, nullptr, "<password>", "WiFi password");
@@ -173,8 +234,10 @@ void console_init(OtaUpdater& ota)
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&ota_update_cmd));
 
-    esp_console_dev_usb_serial_jtag_config_t hw_config = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&hw_config, &repl_config, &repl));
-    ESP_ERROR_CHECK(esp_console_start_repl(repl));
+    usb_serial_jtag_driver_config_t usb_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_config));
+    usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
+    usb_serial_jtag_vfs_use_driver();
     ESP_LOGI(TAG, "Console ready. Type 'help' for commands.");
+    run_usb_console();
 }
