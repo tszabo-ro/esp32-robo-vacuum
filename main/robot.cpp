@@ -145,6 +145,7 @@ bool NeatoRobot::test_lds(LdsDiagnostics& result, char* scan)
         if (!exchange(cmd, out, capacity, SerialConsole::Traffic::Interactive)) return false;
         const std::string_view reply(out);
         return reply.find("Unknown") == std::string_view::npos
+            && reply.find("Unrecognized") == std::string_view::npos
             && reply.find("Invalid") == std::string_view::npos
             && reply.find("Error") == std::string_view::npos;
     };
@@ -160,7 +161,7 @@ bool NeatoRobot::test_lds(LdsDiagnostics& result, char* scan)
     if (ok) ok = send("SetLDSRotation On", response, sizeof(response));
     if (ok) {
         vTaskDelay(pdMS_TO_TICKS(2000));
-        ok = exchange("GetMotors Laser", result.motors, sizeof(result.motors), SerialConsole::Traffic::Interactive);
+        ok = send("GetMotors LDS", result.motors, sizeof(result.motors));
         size_t used = 0;
         const bool scanned = console_.request("GetLDSScan\r\n", 0x1a, scan,
             LdsDiagnostics::SCAN_BYTES, used, 5000, SerialConsole::Traffic::Interactive);
