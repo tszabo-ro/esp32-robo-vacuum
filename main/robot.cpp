@@ -233,7 +233,7 @@ bool NeatoRobot::exchange(const char* command, char* response, size_t capacity,
     request[command_length + 1] = '\0';
     bool complete = console_.request(std::string_view(request, command_length + 1), 0x1a,
                                      response, capacity, used, COMMAND_TIMEOUT_MS, traffic);
-    if (complete) {
+    if (complete && traffic == SerialConsole::Traffic::Interactive) {
         const std::string_view wire(command);
         const size_t key_marker = wire.find(" SKey ");
         if (key_marker == std::string_view::npos) {
