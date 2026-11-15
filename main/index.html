@@ -126,7 +126,7 @@ under Settings.
 <button class="btn-dock" data-robot-cmd="dock">Go to Dock</button>
 <button class="btn-stop" data-robot-cmd="stop">Stop</button>
 </div>
-<div class="note">Commands use the robot's authenticated control interface. Status updates every 10 seconds.</div>
+<div class="note">Status updates once per second.</div>
 </div>
 <div class="card">
 <h2>Connectivity</h2>
@@ -176,9 +176,9 @@ work. A suspended task is intentionally disabled.</div>
 <option value="">None</option>
 </select>
 <label class="chk"><input type="checkbox" id="echo" checked>Echo</label>
-<label class="chk"><input type="checkbox" id="serial-background">Show background commands</label>
 <button id="serial-clear">Clear</button>
 </div>
+<div class="serial-bar"><label class="chk"><input type="checkbox" id="serial-background">Show background commands</label></div>
 <div id="serial-output"></div>
 <div class="cmd-bar">
 <input id="serial-input" placeholder="Send over UART...">
@@ -314,7 +314,7 @@ function showApp(){
   $('app').style.display='block';
   connect();
   refreshStatus();
-  if(!pollTimer) pollTimer=setInterval(refreshStatus,3000);
+  if(!pollTimer) pollTimer=setInterval(refreshStatus,1000);
 }
 
 /* Every response is checked for a 401: sessions expire, and the device

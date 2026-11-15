@@ -519,10 +519,7 @@ esp_err_t WebServer::handle_index(httpd_req_t* req)
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
         "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
     httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
-    // no-cache rather than no-store: the shell may be reused, but it has to be
-    // revalidated first, or an update installed over the air leaves the browser
-    // driving the new firmware through the previous build's page.
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, index_html_start, index_html_end - index_html_start);
 }
@@ -1256,10 +1253,7 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
     const char* type = string_field(doc.get(), "type", 32);
     if (!type) return ESP_OK;
 
-    // Only one inbound message type remains. The other one ran whatever string
-    // arrived as a console command, which made every registered command -
-    // including the firmware updater and the credential setter - callable by
-    // anyone who could open this socket.
+    // UART input and per-connection display options only.
     if (std::string_view(type) == "serial_in") {
         const char* data = string_field(doc.get(), "data", MAX_SERIAL_TX);
         if (data) {

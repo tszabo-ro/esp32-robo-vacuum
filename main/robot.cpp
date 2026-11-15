@@ -9,7 +9,7 @@
 
 namespace {
 constexpr const char* TAG = "robot";
-constexpr uint32_t POLL_PERIOD_MS = 10000;
+constexpr uint32_t POLL_PERIOD_MS = 1000;
 constexpr uint32_t COMMAND_TIMEOUT_MS = 1800;
 constexpr size_t RESPONSE_BYTES = 1024;
 // D5 GetVersion includes battery and hardware metadata and exceeds 1 KiB.
@@ -177,6 +177,7 @@ void NeatoRobot::poll_task(void* arg)
 {
     auto* self = static_cast<NeatoRobot*>(arg);
     while (true) {
+        const TickType_t started = xTaskGetTickCount();
         if (!self->console_.started() || !self->poll_once()) {
             if (self->mutex_) {
                 xSemaphoreTake(self->mutex_, portMAX_DELAY);
@@ -184,6 +185,8 @@ void NeatoRobot::poll_task(void* arg)
                 xSemaphoreGive(self->mutex_);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(POLL_PERIOD_MS));
+        const TickType_t elapsed = xTaskGetTickCount() - started;
+        const TickType_t period = pdMS_TO_TICKS(POLL_PERIOD_MS);
+        vTaskDelay(elapsed < period ? period - elapsed : 1);
     }
 }

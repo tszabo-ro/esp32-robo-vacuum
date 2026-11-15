@@ -40,10 +40,11 @@ esp_err_t SerialConsole::start()
 
 int SerialConsole::write(std::string_view data)
 {
-    if (request_mutex_) xSemaphoreTake(request_mutex_, portMAX_DELAY);
-    int written = port_.write(data);
-    if (request_mutex_) xSemaphoreGive(request_mutex_);
-    return written;
+    // Hold the same transaction reservation as background requests until the
+    // reply ends. Otherwise the poller captures and hides the terminal reply.
+    size_t ignored = 0;
+    return request(data, 0x1a, nullptr, 0, ignored, 1800, Traffic::Interactive)
+        ? static_cast<int>(data.size()) : -1;
 }
 
 esp_err_t SerialConsole::set_baud(uint32_t baud)
@@ -59,7 +60,7 @@ bool SerialConsole::request(std::string_view data, uint8_t response_end, char* r
                             uint32_t timeout_ms, Traffic traffic)
 {
     if (!request_mutex_ || !capture_mutex_ || !response_ready_ || !started() || data.empty()
-        || !response || response_capacity < 2) return false;
+        || (response ? response_capacity < 2 : response_capacity != 0)) return false;
 
     xSemaphoreTake(request_mutex_, portMAX_DELAY);
     // Clear a completion from a previous request before publishing this
@@ -88,10 +89,13 @@ bool SerialConsole::request(std::string_view data, uint8_t response_end, char* r
     xSemaphoreTake(capture_mutex_, portMAX_DELAY);
     const bool complete = response_complete_;
     response_length = response_length_;
-    response[response_length] = '\0';
+    if (response) response[response_length] = '\0';
     response_active_ = false;
     response_buffer_ = nullptr;
     xSemaphoreGive(capture_mutex_);
+    // Some firmware sends a second Ctrl-Z in a later UART chunk. Allow the
+    // receiver to drain that tail before another request can claim the UART.
+    vTaskDelay(pdMS_TO_TICKS(50));
     xSemaphoreGive(request_mutex_);
     return complete;
 }
@@ -141,6 +145,7 @@ SerialConsole::CaptureResult SerialConsole::capture_response(const char* data, s
                 ready = true;
                 break;
             }
+            if (!response_buffer_) continue; // Interactive reply is streamed only.
             if (response_length_ + 1 >= response_capacity_) {
                 ESP_LOGW(TAG, "Robot response exceeded %u bytes",
                          static_cast<unsigned>(response_capacity_));

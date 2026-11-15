@@ -22,6 +22,8 @@ public:
     bool subscribe(Subscriber subscriber, void* context);
     esp_err_t start();
     int write(std::string_view data);
+    // Reserves UART through the reply terminator or timeout. A null response
+    // with zero capacity streams the reply without copying it to a buffer.
     bool request(std::string_view data, uint8_t response_end, char* response,
                  size_t response_capacity, size_t& response_length, uint32_t timeout_ms,
                  Traffic traffic = Traffic::Background);
