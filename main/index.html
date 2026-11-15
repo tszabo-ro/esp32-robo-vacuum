@@ -249,6 +249,12 @@ to anyone on the active WiFi or recovery network. It does not disable login for
 the rest of the interface.</div>
 </div>
 <div class="card">
+<h2>ESP Controller</h2>
+<div class="note">Restart the ESP controller. This does not send a restart command to the vacuum robot.</div>
+<button class="warn-btn" id="restart-esp">Restart ESP</button>
+<div class="note" id="restart-result" role="status"></div>
+</div>
+<div class="card">
 <h2>Session</h2>
 <button class="plain-btn" id="logout">Sign out</button>
 </div>
@@ -751,6 +757,19 @@ $('install-update').addEventListener('click',installLatestUpdate);
 $('save-password').addEventListener('click',changePassword);
 $('pw-confirm').addEventListener('keydown',e=>{if(e.key==='Enter')changePassword()});
 $('logout').addEventListener('click',logout);
+$('restart-esp').addEventListener('click',async()=>{
+  if(!confirm('Restart the ESP controller now? You will need to sign in again.'))return;
+  const button=$('restart-esp');
+  button.disabled=true;
+  try{
+    const result=await post('/api/restart',{});
+    if(!result.ok){report(result);return}
+    stopLive();
+    $('restart-result').textContent='ESP restarting… Reconnecting shortly.';
+    setTimeout(boot,3000);
+  }catch(_){$('restart-result').textContent='Could not confirm ESP restart. Reload the page to check.'}
+  finally{button.disabled=false}
+});
 
 boot();
 </script>

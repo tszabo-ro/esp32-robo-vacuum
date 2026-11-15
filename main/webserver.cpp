@@ -17,6 +17,7 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 
 static constexpr const char* TAG = "webserver";
@@ -171,7 +172,7 @@ esp_err_t WebServer::start()
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 19;
+    config.max_uri_handlers = 20;
     // ESP-IDF's HTTP server keeps three sockets for its listener and control
     // channel. The ESP32-C3 has ten LWIP sockets total, so the default seven
     // client sessions can consume every descriptor and leave OTA unable to
@@ -227,6 +228,7 @@ esp_err_t WebServer::start()
         {"/api/command",  HTTP_POST, handle_post_command, false},
         {"/api/robot/command", HTTP_POST, handle_post_robot_command, false},
         {"/api/robot/lds-test", HTTP_POST, handle_post_lds_test, false},
+        {"/api/restart", HTTP_POST, handle_post_restart, false},
         {"/api/ota",      HTTP_POST, handle_post_ota,     false},
         {"/api/update-check", HTTP_POST, handle_post_update_check, false},
         {"/api/ws-security", HTTP_POST, handle_post_ws_security, false},
@@ -1119,6 +1121,32 @@ esp_err_t WebServer::handle_post_lds_test(httpd_req_t* req)
     const esp_err_t sent = send_json(req, json);
     cJSON_free(json);
     return sent;
+}
+
+esp_err_t WebServer::handle_post_restart(httpd_req_t* req)
+{
+    if (!allow_session_json(req)) return refusal_result(req);
+    auto body = read_body(req);
+    if (!body) return refusal_result(req);
+    JsonDoc input(cJSON_Parse(body->c_str()));
+    if (!input || !cJSON_IsObject(input.get())) return bad_request(req, "Invalid JSON");
+    auto* self = static_cast<WebServer*>(req->user_ctx);
+    if (self->ota_.in_progress()) {
+        return send_status(req, "409 Conflict", "Firmware update in progress; restart after it finishes");
+    }
+    static std::atomic<bool> pending{false};
+    if (pending.exchange(true)) return send_json(req, R"({"ok":true})");
+    // Return the HTTP acknowledgement before resetting the controller. Only
+    // one worker is created, even if the browser retries the request.
+    if (xTaskCreate([](void*) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
+        }, "esp_restart", 3072, nullptr, 5, nullptr) != pdPASS) {
+        pending = false;
+        return send_status(req, "503 Service Unavailable", "Could not schedule ESP restart");
+    }
+    ESP_LOGW(TAG, "ESP restart requested from the web interface");
+    return send_json(req, R"({"ok":true})");
 }
 
 esp_err_t WebServer::handle_post_ota(httpd_req_t* req)
