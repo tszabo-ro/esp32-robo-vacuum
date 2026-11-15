@@ -419,7 +419,7 @@ function tab(id,button){
 function renderTasks(tasks){
   const list=$('tasks-list');
   list.textContent='';
-  for(const task of tasks){
+  for(const task of [...tasks].sort((a,b)=>(a.name||'').localeCompare(b.name||''))){
     const row=document.createElement('div');
     row.className='row';
     const name=document.createElement('span');
