@@ -1073,8 +1073,9 @@ esp_err_t WebServer::handle_post_robot_command(httpd_req_t* req)
     const char* action = string_field(doc.get(), "command", 8);
     if (!action || (std::strcmp(action, "start") != 0
                     && std::strcmp(action, "spot") != 0
-                    && std::strcmp(action, "stop") != 0)) {
-        return bad_request(req, "Command must be start, spot or stop");
+                    && std::strcmp(action, "stop") != 0
+                    && std::strcmp(action, "dock") != 0)) {
+        return bad_request(req, "Command must be start, spot, stop or dock");
     }
     if (!self->robot_.command(action)) {
         return send_status(req, "503 Service Unavailable", "Robot did not respond to the command");

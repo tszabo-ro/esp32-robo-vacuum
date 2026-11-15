@@ -12,6 +12,7 @@ constexpr const char* TAG = "robot";
 constexpr uint32_t POLL_PERIOD_MS = 10000;
 constexpr uint32_t COMMAND_TIMEOUT_MS = 1800;
 constexpr size_t RESPONSE_BYTES = 1024;
+constexpr size_t COMMAND_BYTES = 128;
 // A poll owns a 1 KiB response buffer and logs the full reply. The old 3 KiB
 // task stack left only a few bytes free once the UART request, parser and
 // newlib's logging locks were nested, causing a stack-protection panic after a
@@ -35,8 +36,9 @@ private:
 NeatoRobot::NeatoRobot(SerialConsole& console)
     : console_(console)
     , mutex_(xSemaphoreCreateMutex())
+    , command_mutex_(xSemaphoreCreateMutex())
 {
-    if (!mutex_) ESP_LOGE(TAG, "Could not create the status mutex");
+    if (!mutex_ || !command_mutex_) ESP_LOGE(TAG, "Could not create robot mutexes");
     std::strcpy(status_.state, "unknown");
 }
 
@@ -84,11 +86,17 @@ RobotStatus NeatoRobot::status() const
 bool NeatoRobot::command(const char* action)
 {
     if (!action || suspended_) return false;
-    const char* wire = nullptr;
-    if (std::strcmp(action, "start") == 0) wire = "Clean House";
-    else if (std::strcmp(action, "spot") == 0) wire = "Clean Spot";
-    else if (std::strcmp(action, "stop") == 0) wire = "Clean Stop";
-    else return false;
+    const char* event = robot_response::set_event_for_action(action);
+    if (!event || !command_mutex_) return false;
+
+    Lock command_lock(command_mutex_);
+    if (!ensure_set_event_key()) {
+        ESP_LOGW(TAG, "Could not initialise the robot control key");
+        return false;
+    }
+
+    char wire[COMMAND_BYTES];
+    if (!robot_response::build_set_event_command(event, set_event_key_, wire, sizeof(wire))) return false;
 
     char response[512];
     if (!exchange(wire, response, sizeof(response))) {
@@ -96,6 +104,16 @@ bool NeatoRobot::command(const char* action)
         return false;
     }
     return true;
+}
+
+bool NeatoRobot::ensure_set_event_key()
+{
+    if (set_event_key_[0] != '\0') return true;
+    char response[RESPONSE_BYTES];
+    char serial_number[96];
+    if (!exchange("GetVersion", response, sizeof(response))) return false;
+    if (!robot_response::parse_serial_number(response, serial_number, sizeof(serial_number))) return false;
+    return robot_response::derive_set_event_key(serial_number, set_event_key_, sizeof(set_event_key_));
 }
 
 bool NeatoRobot::poll_once()
@@ -125,7 +143,7 @@ bool NeatoRobot::poll_once()
 bool NeatoRobot::exchange(const char* command, char* response, size_t capacity)
 {
     size_t used = 0;
-    char request[64];
+    char request[COMMAND_BYTES];
     const size_t command_length = std::strlen(command);
     if (command_length + 2 > sizeof(request)) return false;
     std::memcpy(request, command, command_length);
@@ -134,8 +152,20 @@ bool NeatoRobot::exchange(const char* command, char* response, size_t capacity)
     bool complete = console_.request(std::string_view(request, command_length + 1), 0x1a,
                                      response, capacity, used, COMMAND_TIMEOUT_MS);
     if (complete) {
-        ESP_LOGI(TAG, "Sent robot command: %s", command);
-        ESP_LOGI(TAG, "Robot replied: %.*s", static_cast<int>(used), response);
+        const std::string_view wire(command);
+        const size_t key_marker = wire.find(" SKey ");
+        if (key_marker == std::string_view::npos) {
+            ESP_LOGI(TAG, "Sent robot command: %s", command);
+            ESP_LOGI(TAG, "Robot replied: %.*s", static_cast<int>(used), response);
+        } else {
+            // GetState/GetCharger replies are useful diagnostics, but SetEvent
+            // replies normally echo the request. Do not publish its control key
+            // through the web-visible application log.
+            ESP_LOGI(TAG, "Sent authenticated robot command: %.*s",
+                     static_cast<int>(key_marker), command);
+            ESP_LOGI(TAG, "Robot replied to authenticated command (%u bytes)",
+                     static_cast<unsigned>(used));
+        }
     }
     return complete;
 }

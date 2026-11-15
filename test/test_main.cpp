@@ -484,6 +484,29 @@ void test_robot_response_parsing()
     CHECK(!robot_response::parse_battery_percent("FuelPercent,999999999999999", battery));
 }
 
+void test_robot_set_event_protocol()
+{
+    std::printf("robot_set_event\n");
+    char serial[64];
+    char key[26];
+    char command[128];
+
+    CHECK(robot_response::parse_serial_number(
+        "GetVersion\r\nSerial Number,DEVICE,0123456789AB,D\r\n", serial, sizeof(serial)));
+    CHECK_STR(serial, "DEVICE,0123456789AB,D");
+    CHECK(robot_response::derive_set_event_key(serial, key, sizeof(key)));
+    CHECK_STR(key, "b20e9dfade296f1210da702bf");
+    CHECK(robot_response::set_event_for_action("dock") != nullptr);
+    CHECK_STR(robot_response::set_event_for_action("dock"), "UIMGR_EVENT_SMARTAPP_SEND_TO_BASE");
+    CHECK(robot_response::set_event_for_action("erase") == nullptr);
+    CHECK(robot_response::build_set_event_command(robot_response::set_event_for_action("dock"), key,
+                                                  command, sizeof(command)));
+    CHECK_STR(command, "SetEvent event UIMGR_EVENT_SMARTAPP_SEND_TO_BASE SKey b20e9dfade296f1210da702bf");
+    CHECK(!robot_response::derive_set_event_key("DEVICE,0123456789AG,D", key, sizeof(key)));
+    CHECK(!robot_response::parse_serial_number("MainBoard Serial Number,DEVICE,0123456789AB,D", serial,
+                                               sizeof(serial)));
+}
+
 }  // namespace
 
 int main()
@@ -500,6 +523,7 @@ int main()
     test_firmware_versions();
     test_ota_release_redirect();
     test_robot_response_parsing();
+    test_robot_set_event_protocol();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
