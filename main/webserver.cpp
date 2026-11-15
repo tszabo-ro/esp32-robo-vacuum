@@ -145,7 +145,7 @@ WebServer::WebServer(Vacuum& vacuum, MqttClient& mqtt, SerialConsole& serial, Ne
     , ota_(ota)
     , clients_mutex_(xSemaphoreCreateMutex())
     , log_stream_(xStreamBufferCreate(4096, 1))
-    , ws_tx_queue_(xQueueCreate(WS_TX_QUEUE_DEPTH, sizeof(std::string*)))
+    , ws_tx_queue_(xQueueCreate(WS_TX_QUEUE_DEPTH, sizeof(WsMessage)))
 {
     if (!serial_.subscribe(serial_data, this)) {
         ESP_LOGE(TAG, "Could not subscribe the web terminal to UART data");
@@ -164,7 +164,7 @@ esp_err_t WebServer::start()
     // FreeRTOS asserts on a null queue or stream buffer.
     if (!clients_mutex_) clients_mutex_ = xSemaphoreCreateMutex();
     if (!log_stream_) log_stream_ = xStreamBufferCreate(4096, 1);
-    if (!ws_tx_queue_) ws_tx_queue_ = xQueueCreate(WS_TX_QUEUE_DEPTH, sizeof(std::string*));
+    if (!ws_tx_queue_) ws_tx_queue_ = xQueueCreate(WS_TX_QUEUE_DEPTH, sizeof(WsMessage));
     if (!clients_mutex_ || !log_stream_ || !ws_tx_queue_) {
         ESP_LOGE(TAG, "Could not allocate WebSocket resources");
         return ESP_ERR_NO_MEM;
@@ -1267,6 +1267,11 @@ esp_err_t WebServer::handle_ws(httpd_req_t* req)
             // terminal can talk to devices wanting CR, LF, CRLF or nothing.
             self->serial_.write(data);
         }
+    } else if (std::string_view(type) == "serial_options") {
+        cJSON* show_background = cJSON_GetObjectItem(doc.get(), "show_background");
+        if (cJSON_IsBool(show_background)) {
+            self->set_ws_background_serial(httpd_req_to_sockfd(req), cJSON_IsTrue(show_background));
+        }
     }
 
     return ESP_OK;
@@ -1323,7 +1328,17 @@ bool WebServer::ws_client_auth(int fd, std::string& token, bool& session_require
     return false;
 }
 
-void WebServer::broadcast_typed(const char* type, const char* data)
+void WebServer::set_ws_background_serial(int fd, bool enabled)
+{
+    Lock lock(clients_mutex_);
+    for (auto& client : ws_clients_) {
+        if (client.fd != fd) continue;
+        client.show_background_serial = enabled;
+        return;
+    }
+}
+
+void WebServer::broadcast_typed(const char* type, const char* data, bool background_serial)
 {
     cJSON* msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "type", type);
@@ -1334,13 +1349,13 @@ void WebServer::broadcast_typed(const char* type, const char* data)
     // runs in after something else has eaten it - and the old code passed that
     // null straight into a std::string.
     if (json) {
-        enqueue_ws(json);
+        enqueue_ws(json, background_serial);
         cJSON_free(json);
     }
     cJSON_Delete(msg);
 }
 
-void WebServer::enqueue_ws(const char* json)
+void WebServer::enqueue_ws(const char* json, bool background_serial)
 {
     if (!ws_tx_queue_) return;
 
@@ -1353,7 +1368,7 @@ void WebServer::enqueue_ws(const char* json)
 
     std::unique_ptr<std::string> copy(new (std::nothrow) std::string(json));
     if (!copy) return;
-    std::string* queued = copy.get();
+    WsMessage queued = {.json = copy.get(), .background_serial = background_serial};
 
     // Dropped rather than blocked, and this is the whole reason the queue
     // exists. The producers are draining the UART and the log hook; making
@@ -1379,16 +1394,16 @@ void WebServer::ws_tx_task(void* arg)
     auto* self = static_cast<WebServer*>(arg);
 
     while (true) {
-        std::string* raw_msg = nullptr;
-        if (xQueueReceive(self->ws_tx_queue_, &raw_msg, portMAX_DELAY) != pdTRUE) continue;
-        std::unique_ptr<std::string> msg(raw_msg);
+        WsMessage queued;
+        if (xQueueReceive(self->ws_tx_queue_, &queued, portMAX_DELAY) != pdTRUE) continue;
+        std::unique_ptr<std::string> msg(queued.json);
         if (!msg) continue;
 
-        self->deliver_ws(*msg);
+        self->deliver_ws(*msg, queued.background_serial);
     }
 }
 
-void WebServer::deliver_ws(const std::string& msg)
+void WebServer::deliver_ws(const std::string& msg, bool background_serial)
 {
     // The client list is copied under the lock and the sends happen outside it,
     // so a stalled socket cannot block the HTTP server's task from registering
@@ -1406,6 +1421,7 @@ void WebServer::deliver_ws(const std::string& msg)
     frame.len = msg.size();
 
     for (const auto& client : clients) {
+        if (background_serial && !client.show_background_serial) continue;
         // Checked without extending: a socket that merely stays open must not
         // renew its own session, or the lifetime would mean nothing to exactly
         // the client that never goes away.
@@ -1428,10 +1444,12 @@ void WebServer::deliver_ws(const std::string& msg)
 
 // --- Serial bridge ---
 
-void WebServer::serial_data(void* context, const char* data, size_t length)
+void WebServer::serial_data(void* context, const char* data, size_t length,
+                            SerialConsole::Traffic traffic)
 {
     auto* self = static_cast<WebServer*>(context);
-    self->broadcast_typed("serial", text::escape_serial(data, length).c_str());
+    self->broadcast_typed("serial", text::escape_serial(data, length).c_str(),
+                          traffic == SerialConsole::Traffic::Background);
 }
 
 // --- Log capture ---

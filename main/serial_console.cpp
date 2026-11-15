@@ -56,7 +56,7 @@ esp_err_t SerialConsole::set_baud(uint32_t baud)
 
 bool SerialConsole::request(std::string_view data, uint8_t response_end, char* response,
                             size_t response_capacity, size_t& response_length,
-                            uint32_t timeout_ms)
+                            uint32_t timeout_ms, Traffic traffic)
 {
     if (!request_mutex_ || !capture_mutex_ || !response_ready_ || !started() || data.empty()
         || !response || response_capacity < 2) return false;
@@ -70,6 +70,7 @@ bool SerialConsole::request(std::string_view data, uint8_t response_end, char* r
     response_capacity_ = response_capacity;
     response_length_ = 0;
     response_end_ = response_end;
+    response_traffic_ = traffic;
     response_complete_ = false;
     response_active_ = true;
     xSemaphoreGive(capture_mutex_);
@@ -97,23 +98,46 @@ bool SerialConsole::request(std::string_view data, uint8_t response_end, char* r
 
 void SerialConsole::broadcast(const char* data, size_t length)
 {
-    capture_response(data, length);
+    const CaptureResult captured = capture_response(data, length);
+    if (!captured.captured) {
+        notify_subscribers(data, length, Traffic::Interactive);
+        return;
+    }
+
+    // Neato ends command responses with Ctrl-Z. It is framing, not terminal
+    // output. Bytes after it are an unsolicited interactive stream.
+    if (captured.terminator_offset == SIZE_MAX) {
+        notify_subscribers(data, length, captured.traffic);
+        return;
+    }
+    notify_subscribers(data, captured.terminator_offset, captured.traffic);
+    const size_t trailing_offset = captured.terminator_offset + 1;
+    notify_subscribers(data + trailing_offset, length - trailing_offset, Traffic::Interactive);
+}
+
+void SerialConsole::notify_subscribers(const char* data, size_t length, Traffic traffic)
+{
+    if (length == 0) return;
     for (size_t i = 0; i < subscriber_count_; ++i) {
-        subscribers_[i].callback(subscribers_[i].context, data, length);
+        subscribers_[i].callback(subscribers_[i].context, data, length, traffic);
     }
 }
 
-void SerialConsole::capture_response(const char* data, size_t length)
+SerialConsole::CaptureResult SerialConsole::capture_response(const char* data, size_t length)
 {
-    if (!capture_mutex_ || !response_ready_) return;
+    CaptureResult result;
+    if (!capture_mutex_ || !response_ready_) return result;
 
     bool ready = false;
     xSemaphoreTake(capture_mutex_, portMAX_DELAY);
     if (response_active_) {
+        result.captured = true;
+        result.traffic = response_traffic_;
         for (size_t i = 0; i < length; ++i) {
             if (static_cast<uint8_t>(data[i]) == response_end_) {
                 response_complete_ = true;
                 response_active_ = false;
+                result.terminator_offset = i;
                 ready = true;
                 break;
             }
@@ -129,6 +153,7 @@ void SerialConsole::capture_response(const char* data, size_t length)
     }
     xSemaphoreGive(capture_mutex_);
     if (ready) xSemaphoreGive(response_ready_);
+    return result;
 }
 
 void SerialConsole::receive_task(void* arg)

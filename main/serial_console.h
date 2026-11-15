@@ -12,13 +12,19 @@
 // Clients send through write(); none of them reads directly from the UART.
 class SerialConsole {
 public:
-    using Subscriber = void (*)(void* context, const char* data, size_t length);
+    enum class Traffic {
+        Interactive,
+        Background,
+    };
+
+    using Subscriber = void (*)(void* context, const char* data, size_t length, Traffic traffic);
     explicit SerialConsole(SerialPort& port);
     bool subscribe(Subscriber subscriber, void* context);
     esp_err_t start();
     int write(std::string_view data);
     bool request(std::string_view data, uint8_t response_end, char* response,
-                 size_t response_capacity, size_t& response_length, uint32_t timeout_ms);
+                 size_t response_capacity, size_t& response_length, uint32_t timeout_ms,
+                 Traffic traffic = Traffic::Background);
     esp_err_t set_baud(uint32_t baud);
     uint32_t baud() const { return port_.baud(); }
     bool started() const { return port_.started() && receive_task_ != nullptr; }
@@ -30,7 +36,14 @@ private:
     };
     static void receive_task(void* arg);
     void broadcast(const char* data, size_t length);
-    void capture_response(const char* data, size_t length);
+    struct CaptureResult {
+        bool captured = false;
+        Traffic traffic = Traffic::Interactive;
+        size_t terminator_offset = SIZE_MAX;
+    };
+
+    CaptureResult capture_response(const char* data, size_t length);
+    void notify_subscribers(const char* data, size_t length, Traffic traffic);
 
     static constexpr size_t MAX_SUBSCRIBERS = 4;
     SerialPort& port_;
@@ -50,6 +63,7 @@ private:
     size_t response_capacity_ = 0;
     size_t response_length_ = 0;
     uint8_t response_end_ = 0;
+    Traffic response_traffic_ = Traffic::Background;
     bool response_active_ = false;
     bool response_complete_ = false;
 };

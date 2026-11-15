@@ -25,7 +25,7 @@ h2{font-size:16px;margin-bottom:8px;color:#888}
 /* Serial output is a single text node rather than per-line divs: UART data
    arrives in arbitrary chunks, not neat lines. */
 #serial-output{height:46vh;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;background:#0a0a0a;color:#6cf;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all}
-.serial-bar{display:flex;gap:4px;margin-bottom:8px;align-items:center}
+.serial-bar{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;align-items:center}
 .serial-bar select{padding:8px;background:#1a1a1a;border:1px solid #333;color:#fff;border-radius:4px}
 .serial-bar button{padding:8px 12px;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer}
 .serial-bar .chk{font-size:12px;color:#888;display:flex;align-items:center;gap:4px}
@@ -171,11 +171,12 @@ work. A suspended task is intentionally disabled.</div>
 </select>
 <select id="eol" title="Appended to each line sent">
 <option value="\n">LF</option>
-<option value="\r\n">CRLF</option>
+<option value="\r\n" selected>CRLF</option>
 <option value="\r">CR</option>
 <option value="">None</option>
 </select>
 <label class="chk"><input type="checkbox" id="echo" checked>Echo</label>
+<label class="chk"><input type="checkbox" id="serial-background">Show background commands</label>
 <button id="serial-clear">Clear</button>
 </div>
 <div id="serial-output"></div>
@@ -436,6 +437,7 @@ function refreshTasks(){
 
 function connect(){
   ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+  ws.onopen=()=>setSerialOptions();
   ws.onmessage=e=>{
     let m;
     try{m=JSON.parse(e.data)}catch(_){return}
@@ -459,6 +461,8 @@ function appendLog(text){
 }
 
 function appendSerial(text){
+  text=text.replaceAll('\x1a','');
+  if(!text)return;
   const el=$('serial-output');
   const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<20;
   el.textContent+=text;
@@ -477,6 +481,11 @@ function sendSerial(){
   // Local echo, since a loopback or a silent device may not echo back.
   if($('echo').checked) appendSerial(text+'\n');
   input.value='';
+}
+
+function setSerialOptions(){
+  if(ws&&ws.readyState===1)
+    ws.send(JSON.stringify({type:'serial_options',show_background:$('serial-background').checked}));
 }
 
 /* --- Actions --- */
@@ -671,6 +680,7 @@ $('baud').addEventListener('change',setBaud);
 $('save-ws-auth').addEventListener('click',saveWsAuth);
 $('serial-clear').addEventListener('click',()=>{$('serial-output').textContent=''});
 $('serial-send').addEventListener('click',sendSerial);
+$('serial-background').addEventListener('change',setSerialOptions);
 $('refresh-tasks').addEventListener('click',refreshTasks);
 $('serial-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendSerial()});
 $('save-wifi').addEventListener('click',saveWifi);

@@ -90,7 +90,7 @@ bool NeatoRobot::command(const char* action)
     if (!event || !command_mutex_) return false;
 
     Lock command_lock(command_mutex_);
-    if (!ensure_set_event_key()) {
+    if (!ensure_set_event_key(SerialConsole::Traffic::Interactive)) {
         ESP_LOGW(TAG, "Could not initialise the robot control key");
         return false;
     }
@@ -99,19 +99,19 @@ bool NeatoRobot::command(const char* action)
     if (!robot_response::build_set_event_command(event, set_event_key_, wire, sizeof(wire))) return false;
 
     char response[512];
-    if (!exchange(wire, response, sizeof(response))) {
+    if (!exchange(wire, response, sizeof(response), SerialConsole::Traffic::Interactive)) {
         ESP_LOGW(TAG, "Robot command '%s' did not get a complete reply", action);
         return false;
     }
     return true;
 }
 
-bool NeatoRobot::ensure_set_event_key()
+bool NeatoRobot::ensure_set_event_key(SerialConsole::Traffic traffic)
 {
     if (set_event_key_[0] != '\0') return true;
     char response[RESPONSE_BYTES];
     char serial_number[96];
-    if (!exchange("GetVersion", response, sizeof(response))) return false;
+    if (!exchange("GetVersion", response, sizeof(response), traffic)) return false;
     if (!robot_response::parse_serial_number(response, serial_number, sizeof(serial_number))) return false;
     return robot_response::derive_set_event_key(serial_number, set_event_key_, sizeof(set_event_key_));
 }
@@ -140,7 +140,8 @@ bool NeatoRobot::poll_once()
     return true;
 }
 
-bool NeatoRobot::exchange(const char* command, char* response, size_t capacity)
+bool NeatoRobot::exchange(const char* command, char* response, size_t capacity,
+                          SerialConsole::Traffic traffic)
 {
     size_t used = 0;
     char request[COMMAND_BYTES];
@@ -150,7 +151,7 @@ bool NeatoRobot::exchange(const char* command, char* response, size_t capacity)
     request[command_length] = '\n';
     request[command_length + 1] = '\0';
     bool complete = console_.request(std::string_view(request, command_length + 1), 0x1a,
-                                     response, capacity, used, COMMAND_TIMEOUT_MS);
+                                     response, capacity, used, COMMAND_TIMEOUT_MS, traffic);
     if (complete) {
         const std::string_view wire(command);
         const size_t key_marker = wire.find(" SKey ");

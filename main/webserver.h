@@ -123,6 +123,12 @@ private:
         int fd = -1;
         char token[Auth::TOKEN_CHARS + 1] = {};
         bool session_required = true;
+        bool show_background_serial = false;
+    };
+
+    struct WsMessage {
+        std::string* json = nullptr;
+        bool background_serial = false;
     };
 
     void add_ws_client(int fd, const std::string& token, bool session_required);
@@ -131,21 +137,23 @@ private:
     // The authorization state recorded for `fd`. False when the descriptor is
     // not a client this server knows about.
     bool ws_client_auth(int fd, std::string& token, bool& session_required);
+    void set_ws_background_serial(int fd, bool enabled);
 
     // Producer side: renders the message and hands it to the sender task.
     // Never blocks and never touches the HTTP server, so the UART reader and
     // the log reader cannot be stalled by a browser that stopped reading.
-    void broadcast_typed(const char* type, const char* data);
-    void enqueue_ws(const char* json);
+    void broadcast_typed(const char* type, const char* data, bool background_serial = false);
+    void enqueue_ws(const char* json, bool background_serial = false);
 
     // Consumer side. The only place in this firmware that calls the server's
     // WebSocket API from outside the HTTP server's own task - see the task
     // function's comment for why that has to be exactly one place.
-    void deliver_ws(const std::string& msg);
+    void deliver_ws(const std::string& msg, bool background_serial);
 
     static void ws_tx_task(void* arg);
     static void log_broadcast_task(void* arg);
-    static void serial_data(void* context, const char* data, size_t length);
+    static void serial_data(void* context, const char* data, size_t length,
+                            SerialConsole::Traffic traffic);
 
     // Reads the whole body, or answers the request and returns nothing. A
     // std::optional rather than an empty string because "too large" and

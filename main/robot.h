@@ -31,8 +31,9 @@ public:
     bool command(const char* action);
 
 private:
-    bool ensure_set_event_key();
-    bool exchange(const char* command, char* response, size_t capacity);
+    bool ensure_set_event_key(SerialConsole::Traffic traffic);
+    bool exchange(const char* command, char* response, size_t capacity,
+                  SerialConsole::Traffic traffic = SerialConsole::Traffic::Background);
     static void poll_task(void* arg);
     bool poll_once();
     SerialConsole& console_;
