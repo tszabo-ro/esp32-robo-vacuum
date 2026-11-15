@@ -8,12 +8,16 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "serial_console.h"
+#include "robot_response.h"
 
 struct RobotStatus {
     char state[64];
-    int battery_percent;
+    int battery_percent = -1;
     bool available;
     uint32_t age_seconds;
+    bool errors_available = false;
+    robot_response::Diagnostic error;
+    robot_response::Diagnostic alert;
 };
 
 // Polls the Neato D5 over its UART and keeps a small, thread-safe status cache.
@@ -39,7 +43,7 @@ private:
     SerialConsole& console_;
     mutable SemaphoreHandle_t mutex_ = nullptr;
     SemaphoreHandle_t command_mutex_ = nullptr;
-    RobotStatus status_ = {{0}, -1, false, 0};
+    RobotStatus status_ = {};
     char set_event_key_[26] = {};
     TickType_t last_update_ = 0;
     TaskHandle_t poll_task_ = nullptr;

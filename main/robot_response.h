@@ -5,6 +5,16 @@
 
 namespace robot_response {
 
+struct Diagnostic {
+    int code = 200; // UI_ALERT_INVALID means no active fault/alert.
+    char token[96] = {};
+};
+
+// Require both GetErr sections; reject malformed/truncated entries atomically.
+bool parse_errors(std::string_view response, Diagnostic& error, Diagnostic& alert);
+// Known descriptions, with the raw token retained separately for unknown codes.
+const char* diagnostic_message(int code);
+
 // Extract the current robot state into a bounded NUL-terminated buffer.
 bool parse_state(std::string_view response, char* out, size_t out_size);
 

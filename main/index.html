@@ -120,6 +120,9 @@ under Settings.
 <div class="row"><span class="label">Connection</span><span id="r-connection">Waiting for robot…</span></div>
 <div class="row"><span class="label">State</span><span id="r-state">--</span></div>
 <div class="row"><span class="label">Battery</span><span id="r-battery">--</span></div>
+<div id="r-diagnostics" class="warning" style="display:none"></div>
+<button class="plain-btn" id="clear-errors">Clear errors</button>
+<div class="note">Clears reported errors and alerts. An active fault may be reported again.</div>
 <div class="actions">
 <button class="btn-start" data-robot-cmd="start">Start</button>
 <button class="btn-dock" data-robot-cmd="spot">Spot clean</button>
@@ -632,6 +635,17 @@ function refreshStatus(){
       ?'Connected (updated '+robot.age_seconds+'s ago)':'Not responding';
     $('r-state').textContent=robot.available?robot.state:'--';
     $('r-battery').textContent=robot.available&&robot.battery>=0?robot.battery+'%':'--';
+    const diagnostics=$('r-diagnostics');
+    const messages=[];
+    if(!robot.errors_available)messages.push('Error status unavailable; retrying.');
+    for(const name of ['error','alert']){
+      const d=robot[name];
+      if(!d||d.code===200)continue;
+      const label=d.message||(d.token||'Unknown robot fault').replace(/^UI_(ERROR|ALERT)_/,'').replaceAll('_',' ').toLowerCase();
+      messages.push((robot.errors_available?'':'Last known ')+name+' '+d.code+': '+label+' ('+d.token+')');
+    }
+    diagnostics.textContent=messages.join(' — ');
+    diagnostics.style.display=messages.length?'block':'none';
 
     const wd=s.wifi.connected;
     setDot($('w-status'),wd,wd?(s.wifi.ssid||'Connected'):(s.wifi.state||'Disconnected'));
@@ -681,6 +695,17 @@ $('save-ws-auth').addEventListener('click',saveWsAuth);
 $('serial-clear').addEventListener('click',()=>{$('serial-output').textContent=''});
 $('serial-send').addEventListener('click',sendSerial);
 $('serial-background').addEventListener('change',setSerialOptions);
+$('clear-errors').addEventListener('click',async()=>{
+  const button=$('clear-errors');
+  button.disabled=true;
+  button.textContent='Clearing…';
+  try{
+    const result=await post('/api/robot/command',{command:'clear'});
+    if(!result.ok)report(result);
+    refreshStatus();
+  }catch(_){alert('Could not send the clear errors command')}
+  finally{button.disabled=false;button.textContent='Clear errors'}
+});
 $('refresh-tasks').addEventListener('click',refreshTasks);
 $('serial-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendSerial()});
 $('save-wifi').addEventListener('click',saveWifi);

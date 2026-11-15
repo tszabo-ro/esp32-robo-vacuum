@@ -509,6 +509,25 @@ void test_robot_set_event_protocol()
                                                sizeof(serial)));
 }
 
+void test_robot_errors()
+{
+    robot_response::Diagnostic error, alert;
+    CHECK(robot_response::parse_errors("GetErr\r\nError\r\n261 -  (UI_ERROR_LDS_MISSED_PACKETS)\r\n"
+        "Alert\r\n203 -  (UI_ALERT_RETURN_TO_START)\r\nUSB state\r\n NOT connected", error, alert));
+    CHECK(error.code == 261);
+    CHECK(alert.code == 203);
+    CHECK_STR(error.token, "UI_ERROR_LDS_MISSED_PACKETS");
+    CHECK_STR(robot_response::diagnostic_message(error.code), "Missing data packets from laser scanner");
+    CHECK(!robot_response::parse_errors("Error\n200 - (UI_ALERT_INVALID)", error, alert));
+    CHECK(error.code == 261); // Bad/incomplete replies preserve the last known diagnostic.
+    CHECK(!robot_response::parse_errors("Error\n261 - (UI_ERROR_BROKEN\nAlert\n200 - (UI_ALERT_INVALID)", error, alert));
+    CHECK(robot_response::parse_errors("Error\n399 - (UI_ERROR_FUTURE)\nAlert\n200 - (UI_ALERT_INVALID)", error, alert));
+    CHECK(error.code == 399);
+    CHECK_STR(error.token, "UI_ERROR_FUTURE");
+    CHECK(robot_response::parse_errors("Error\n200 - (UI_ALERT_INVALID)\nAlert\n200 - (UI_ALERT_INVALID)", error, alert));
+    CHECK(error.code == 200 && alert.code == 200);
+}
+
 }  // namespace
 
 int main()
@@ -526,6 +545,7 @@ int main()
     test_ota_release_redirect();
     test_robot_response_parsing();
     test_robot_set_event_protocol();
+    test_robot_errors();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -47,6 +47,68 @@ bool copy_trimmed(std::string_view value, char* out, size_t out_size)
 }
 }  // namespace
 
+bool parse_errors(std::string_view response, Diagnostic& error, Diagnostic& alert)
+{
+    Diagnostic parsed[2];
+    bool seen[2] = {};
+    int section = -1;
+    while (!response.empty()) {
+        const size_t end = response.find('\n');
+        auto line = response.substr(0, end);
+        response = end == std::string_view::npos ? std::string_view{} : response.substr(end + 1);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+        if (line == "Error" || line == "Alert") {
+            section = line == "Error" ? 0 : 1;
+            if (seen[section]) return false;
+            continue;
+        }
+        if (section < 0 || line.empty()) continue;
+        if (line.size() < 3 || line[0] < '0' || line[0] > '9'
+            || line[1] < '0' || line[1] > '9' || line[2] < '0' || line[2] > '9') return false;
+        const int code = (line[0] - '0') * 100 + (line[1] - '0') * 10 + line[2] - '0';
+        line.remove_prefix(3);
+        while (!line.empty() && line.front() == ' ') line.remove_prefix(1);
+        if (!line.starts_with("-")) return false;
+        const size_t open = line.find('('), close = line.find(')');
+        if (code < 200 || open == std::string_view::npos || close == std::string_view::npos
+            || close <= open + 1) return false;
+        auto token = line.substr(open + 1, close - open - 1);
+        if (token.size() >= sizeof(parsed[section].token)
+            || (!token.starts_with("UI_ERROR_") && !token.starts_with("UI_ALERT_"))) return false;
+        for (char c : token) if (!is_state_char(c)) return false;
+        parsed[section].code = code;
+        std::memcpy(parsed[section].token, token.data(), token.size());
+        seen[section] = true;
+        section = -1;
+    }
+    if (!seen[0] || !seen[1]) return false;
+    error = parsed[0];
+    alert = parsed[1];
+    return true;
+}
+
+const char* diagnostic_message(int code)
+{
+    switch (code) {
+    case 200: return "None";
+    case 203: return "Return to cleaning start location";
+    case 249: return "Dust bin is missing";
+    case 250: return "Dust bin is full";
+    case 251: return "Battery is too hot";
+    case 252: return "Unable to return to dock";
+    case 254: return "Bumper is stuck";
+    case 255: return "Robot detected being picked up or tilted";
+    case 257: return "Left wheel is stuck";
+    case 258: return "Right wheel is stuck";
+    case 259: return "Laser scanner is jammed";
+    case 260: return "Laser scanner is disconnected";
+    case 261: return "Missing data packets from laser scanner";
+    case 262: return "Invalid data packets from laser scanner";
+    default: return ""; // UI derives a readable label from the raw token.
+    }
+}
+
 bool parse_state(std::string_view response, char* out, size_t out_size)
 {
     if (!out || out_size == 0) return false;

@@ -840,6 +840,14 @@ esp_err_t WebServer::handle_get_status(httpd_req_t* req)
     cJSON_AddStringToObject(robot, "state", robot_status.state);
     cJSON_AddNumberToObject(robot, "battery", robot_status.battery_percent);
     cJSON_AddNumberToObject(robot, "age_seconds", robot_status.age_seconds);
+    cJSON_AddBoolToObject(robot, "errors_available", robot_status.errors_available);
+    for (const char* name : {"error", "alert"}) {
+        const auto& diagnostic = std::strcmp(name, "error") == 0 ? robot_status.error : robot_status.alert;
+        cJSON* item = cJSON_AddObjectToObject(robot, name);
+        cJSON_AddNumberToObject(item, "code", diagnostic.code);
+        cJSON_AddStringToObject(item, "token", diagnostic.token);
+        cJSON_AddStringToObject(item, "message", robot_response::diagnostic_message(diagnostic.code));
+    }
 
     // Reported over HTTP because the version is otherwise only visible in the
     // boot log. Once the robot is closed and updates arrive over the air, this
@@ -1071,8 +1079,9 @@ esp_err_t WebServer::handle_post_robot_command(httpd_req_t* req)
     if (!action || (std::strcmp(action, "start") != 0
                     && std::strcmp(action, "spot") != 0
                     && std::strcmp(action, "stop") != 0
-                    && std::strcmp(action, "dock") != 0)) {
-        return bad_request(req, "Command must be start, spot, stop or dock");
+                    && std::strcmp(action, "dock") != 0
+                    && std::strcmp(action, "clear") != 0)) {
+        return bad_request(req, "Command must be start, spot, stop, dock or clear");
     }
     if (!self->robot_.command(action)) {
         return send_status(req, "503 Service Unavailable", "Robot did not respond to the command");

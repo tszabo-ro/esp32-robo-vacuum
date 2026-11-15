@@ -88,22 +88,37 @@ RobotStatus NeatoRobot::status() const
 bool NeatoRobot::command(const char* action)
 {
     if (!action || suspended_) return false;
+    const bool clear_errors = std::strcmp(action, "clear") == 0;
     const char* event = robot_response::set_event_for_action(action);
-    if (!event || !command_mutex_) return false;
+    if ((!event && !clear_errors) || !command_mutex_) return false;
 
     Lock command_lock(command_mutex_);
-    if (!ensure_set_event_key(SerialConsole::Traffic::Interactive)) {
+    if (!clear_errors && !ensure_set_event_key(SerialConsole::Traffic::Interactive)) {
         ESP_LOGW(TAG, "Could not initialise the robot control key");
         return false;
     }
 
     char wire[COMMAND_BYTES];
-    if (!robot_response::build_set_event_command(event, set_event_key_, wire, sizeof(wire))) return false;
+    if (clear_errors) std::strcpy(wire, "SetUIError clearall");
+    else if (!robot_response::build_set_event_command(event, set_event_key_, wire, sizeof(wire))) return false;
 
     char response[512];
     if (!exchange(wire, response, sizeof(response), SerialConsole::Traffic::Interactive)) {
         ESP_LOGW(TAG, "Robot command '%s' did not get a complete reply", action);
         return false;
+    }
+    if (clear_errors) {
+        // Read back rather than optimistically hiding an error that can recur
+        // immediately while the underlying hardware fault is still present.
+        robot_response::Diagnostic error, alert;
+        const bool valid = exchange("GetErr", response, sizeof(response), SerialConsole::Traffic::Interactive)
+            && robot_response::parse_errors(response, error, alert);
+        Lock status_lock(mutex_);
+        status_.errors_available = valid;
+        if (valid) {
+            status_.error = error;
+            status_.alert = alert;
+        }
     }
     return true;
 }
@@ -133,7 +148,16 @@ bool NeatoRobot::poll_once()
     int battery = 0;
     if (!robot_response::parse_battery_percent(response, battery)) return false;
 
+    robot_response::Diagnostic error, alert;
+    const bool errors_available = exchange("GetErr", response, sizeof(response))
+        && robot_response::parse_errors(response, error, alert);
+
     xSemaphoreTake(mutex_, portMAX_DELAY);
+    status_.errors_available = errors_available;
+    if (errors_available) {
+        status_.error = error;
+        status_.alert = alert;
+    }
     std::strcpy(status_.state, robot_state);
     status_.battery_percent = battery;
     status_.available = true;
@@ -182,6 +206,7 @@ void NeatoRobot::poll_task(void* arg)
             if (self->mutex_) {
                 xSemaphoreTake(self->mutex_, portMAX_DELAY);
                 self->status_.available = false;
+                self->status_.errors_available = false;
                 xSemaphoreGive(self->mutex_);
             }
         }
