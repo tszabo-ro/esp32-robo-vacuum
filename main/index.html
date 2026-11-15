@@ -106,6 +106,7 @@ range knows it.
 <button class="active" data-tab="status">Status</button>
 <button data-tab="log">Log</button>
 <button data-tab="serial">Serial</button>
+<button data-tab="diagnostics">Diagnostics</button>
 <button data-tab="tasks">Tasks</button>
 <button data-tab="settings">Settings</button>
 </nav>
@@ -144,6 +145,18 @@ under Settings.
 </div>
 <div class="note" id="update-note">Check GitHub for a newer firmware release.</div>
 <div class="row"><span class="label">Free Heap</span><span id="heap">--</span></div>
+</div>
+</section>
+
+<section id="diagnostics">
+<div class="card">
+<h2>LDS diagnostics</h2>
+<div class="note">Runs while the robot is idle. Spins only the laser scanner briefly, reads its motor statistics and a scan, then stops it and exits test mode. Keep the robot stationary.</div>
+<button class="plain-btn" id="run-lds-test">Run LDS test</button>
+<div id="lds-result" class="note" role="status"></div>
+<h2>Motor statistics</h2><pre id="lds-motors" style="white-space:pre-wrap"></pre>
+<h2>Robot errors</h2><pre id="lds-errors" style="white-space:pre-wrap"></pre>
+<h2>Scan data</h2><pre id="lds-scan" style="white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
 </div>
 </section>
 
@@ -705,6 +718,27 @@ $('clear-errors').addEventListener('click',async()=>{
     refreshStatus();
   }catch(_){alert('Could not send the clear errors command')}
   finally{button.disabled=false;button.textContent='Clear errors'}
+});
+$('run-lds-test').addEventListener('click',async()=>{
+  if(!confirm('Run the laser scanner test? The robot must be idle and stationary.'))return;
+  const button=$('run-lds-test');
+  button.disabled=true;
+  // The test holds the robot command sequence while HTTP waits for completion.
+  if(pollTimer){clearInterval(pollTimer);pollTimer=null}
+  $('lds-result').textContent='Testing scanner… This may take up to 20 seconds.';
+  for(const id of ['lds-motors','lds-errors','lds-scan'])$(id).textContent='';
+  try{
+    const result=await post('/api/robot/lds-test',{});
+    $('lds-result').textContent=(result.message||result.error||'No diagnostic result received')
+      +(result.scan_points!==undefined?' — '+result.scan_points+'/360 samples, '+result.valid_points+' usable distances.':'');
+    $('lds-motors').textContent=result.motors||'';
+    $('lds-errors').textContent=result.errors||'';
+    $('lds-scan').textContent=result.scan||'';
+  }catch(_){$('lds-result').textContent='Connection lost during test; check that the scanner stopped.'}
+  finally{
+    button.disabled=false;
+    if($('app').style.display!=='none'&&!pollTimer)pollTimer=setInterval(refreshStatus,1000);
+  }
 });
 $('refresh-tasks').addEventListener('click',refreshTasks);
 $('serial-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendSerial()});

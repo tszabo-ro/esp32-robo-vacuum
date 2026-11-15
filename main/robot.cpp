@@ -133,6 +133,54 @@ bool NeatoRobot::ensure_set_event_key(SerialConsole::Traffic traffic)
     return robot_response::derive_set_event_key(serial_number, set_event_key_, sizeof(set_event_key_));
 }
 
+bool NeatoRobot::test_lds(LdsDiagnostics& result, char* scan)
+{
+    if (!scan || !command_mutex_ || suspended_) {
+        result.message = "Robot diagnostics are unavailable during an update";
+        return false;
+    }
+    Lock lock(command_mutex_);
+    char response[512];
+    const auto send = [&](const char* cmd, char* out, size_t capacity) {
+        if (!exchange(cmd, out, capacity, SerialConsole::Traffic::Interactive)) return false;
+        const std::string_view reply(out);
+        return reply.find("Unknown") == std::string_view::npos
+            && reply.find("Invalid") == std::string_view::npos
+            && reply.find("Error") == std::string_view::npos;
+    };
+    if (!exchange("GetState", response, sizeof(response), SerialConsole::Traffic::Interactive)
+        || (!std::strstr(response, "UIMGR_STATE_IDLE\r")
+            && !std::strstr(response, "UIMGR_STATE_IDLE\n")
+            && !std::strstr(response, "UIMGR_STATE_STANDBY\r")
+            && !std::strstr(response, "UIMGR_STATE_STANDBY\n"))) {
+        result.message = "Stop the cleaning session before running the LDS test; robot must be idle or standby";
+        return false;
+    }
+    bool ok = send("TestMode On", response, sizeof(response));
+    if (ok) ok = send("SetLDSRotation On", response, sizeof(response));
+    if (ok) {
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        ok = exchange("GetMotors Laser", result.motors, sizeof(result.motors), SerialConsole::Traffic::Interactive);
+        size_t used = 0;
+        const bool scanned = console_.request("GetLDSScan\r\n", 0x1a, scan,
+            LdsDiagnostics::SCAN_BYTES, used, 5000, SerialConsole::Traffic::Interactive);
+        ok = ok && scanned;
+    }
+    // Attempt both even if starting the test timed out: the robot may have
+    // accepted a command whose reply was lost. Never leave rotation enabled.
+    const bool stopped = send("SetLDSRotation Off", response, sizeof(response));
+    const bool exited = send("TestMode Off", response, sizeof(response));
+    result.cleanup_ok = stopped && exited;
+    const bool errors_read = exchange("GetErr", result.errors, sizeof(result.errors), SerialConsole::Traffic::Interactive);
+    const auto summary = robot_response::summarize_lds_scan(scan);
+    result.message = !result.cleanup_ok ? "Could not confirm scanner shutdown; check the robot"
+        : ok && summary.points == 360 && summary.valid_points > 0 ? "Full scan received; inspect rotation speed, samples, and robot errors below"
+        : ok ? "Scanner replied but scan data is missing, incomplete, or contains no usable distances"
+             : "Test incomplete: a command timed out, was rejected, or exceeded the response limit";
+    if (!errors_read) std::strcpy(result.errors, "Could not read robot errors");
+    return ok && result.cleanup_ok && summary.points == 360 && summary.valid_points > 0;
+}
+
 bool NeatoRobot::poll_once()
 {
     char response[RESPONSE_BYTES];
@@ -202,12 +250,15 @@ void NeatoRobot::poll_task(void* arg)
     auto* self = static_cast<NeatoRobot*>(arg);
     while (true) {
         const TickType_t started = xTaskGetTickCount();
-        if (!self->console_.started() || !self->poll_once()) {
-            if (self->mutex_) {
-                xSemaphoreTake(self->mutex_, portMAX_DELAY);
-                self->status_.available = false;
-                self->status_.errors_available = false;
-                xSemaphoreGive(self->mutex_);
+        {
+            Lock command_lock(self->command_mutex_);
+            if (!self->console_.started() || !self->poll_once()) {
+                if (self->mutex_) {
+                    xSemaphoreTake(self->mutex_, portMAX_DELAY);
+                    self->status_.available = false;
+                    self->status_.errors_available = false;
+                    xSemaphoreGive(self->mutex_);
+                }
             }
         }
         const TickType_t elapsed = xTaskGetTickCount() - started;

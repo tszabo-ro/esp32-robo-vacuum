@@ -528,6 +528,22 @@ void test_robot_errors()
     CHECK(error.code == 200 && alert.code == 200);
 }
 
+void test_lds_scan_summary()
+{
+    const auto scan = robot_response::summarize_lds_scan(
+        "GetLDSScan\r\nAngleInDegrees,DistInMM,Intensity,ErrorCodeHEX\r\n"
+        "0,221,1400,0\r\n1,0,0,0\r\n2,500,12,8002\r\n"
+        "0,221,1400,0\r\n360,12,1,0\r\n3,999999999999999,0,0\r\nROTATION_SPEED,5.00\r\n");
+    CHECK(scan.points == 3);
+    CHECK(scan.valid_points == 1);
+    CHECK(robot_response::summarize_lds_scan("Error: 261").points == 0);
+    CHECK(robot_response::summarize_lds_scan("").points == 0);
+    std::string full;
+    for (unsigned angle = 0; angle < 360; ++angle) full += std::to_string(angle) + ",123,100,0\n";
+    CHECK(robot_response::summarize_lds_scan(full).points == 360);
+    CHECK(robot_response::summarize_lds_scan(full).valid_points == 360);
+}
+
 }  // namespace
 
 int main()
@@ -546,6 +562,7 @@ int main()
     test_robot_response_parsing();
     test_robot_set_event_protocol();
     test_robot_errors();
+    test_lds_scan_summary();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

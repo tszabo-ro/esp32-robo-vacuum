@@ -15,6 +15,14 @@ bool parse_errors(std::string_view response, Diagnostic& error, Diagnostic& aler
 // Known descriptions, with the raw token retained separately for unknown codes.
 const char* diagnostic_message(int code);
 
+struct LdsScanSummary {
+    unsigned points = 0;
+    unsigned valid_points = 0;
+};
+// Count unique, well-formed angular samples; zero-distance/error samples are
+// not usable readings. Does not infer scanner health from an incomplete scan.
+LdsScanSummary summarize_lds_scan(std::string_view response);
+
 // Extract the current robot state into a bounded NUL-terminated buffer.
 bool parse_state(std::string_view response, char* out, size_t out_size);
 

@@ -171,7 +171,7 @@ esp_err_t WebServer::start()
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 18;
+    config.max_uri_handlers = 19;
     // ESP-IDF's HTTP server keeps three sockets for its listener and control
     // channel. The ESP32-C3 has ten LWIP sockets total, so the default seven
     // client sessions can consume every descriptor and leave OTA unable to
@@ -226,6 +226,7 @@ esp_err_t WebServer::start()
         {"/api/ap",       HTTP_POST, handle_post_ap,      false},
         {"/api/command",  HTTP_POST, handle_post_command, false},
         {"/api/robot/command", HTTP_POST, handle_post_robot_command, false},
+        {"/api/robot/lds-test", HTTP_POST, handle_post_lds_test, false},
         {"/api/ota",      HTTP_POST, handle_post_ota,     false},
         {"/api/update-check", HTTP_POST, handle_post_update_check, false},
         {"/api/ws-security", HTTP_POST, handle_post_ws_security, false},
@@ -1087,6 +1088,37 @@ esp_err_t WebServer::handle_post_robot_command(httpd_req_t* req)
         return send_status(req, "503 Service Unavailable", "Robot did not respond to the command");
     }
     return send_json(req, R"({"ok":true})");
+}
+
+esp_err_t WebServer::handle_post_lds_test(httpd_req_t* req)
+{
+    if (!allow_session_json(req)) return refusal_result(req);
+    auto body = read_body(req);
+    if (!body) return refusal_result(req);
+    JsonDoc input(cJSON_Parse(body->c_str()));
+    if (!input || !cJSON_IsObject(input.get())) return bad_request(req, "Invalid JSON");
+    // Fixed firmware limit, independent of anything supplied by the client.
+    std::unique_ptr<char[]> scan(new (std::nothrow) char[LdsDiagnostics::SCAN_BYTES]{});
+    if (!scan) return send_status(req, "503 Service Unavailable", "Not enough memory for scanner diagnostics");
+    auto* self = static_cast<WebServer*>(req->user_ctx);
+    LdsDiagnostics result;
+    const bool ok = self->robot_.test_lds(result, scan.get());
+    JsonDoc output(cJSON_CreateObject());
+    if (!output) return send_status(req, "503 Service Unavailable", "Could not allocate diagnostics result");
+    cJSON_AddBoolToObject(output.get(), "ok", ok);
+    cJSON_AddStringToObject(output.get(), "message", result.message);
+    cJSON_AddBoolToObject(output.get(), "cleanup_ok", result.cleanup_ok);
+    cJSON_AddStringToObject(output.get(), "motors", result.motors);
+    cJSON_AddStringToObject(output.get(), "scan", scan.get());
+    const auto summary = robot_response::summarize_lds_scan(scan.get());
+    cJSON_AddNumberToObject(output.get(), "scan_points", summary.points);
+    cJSON_AddNumberToObject(output.get(), "valid_points", summary.valid_points);
+    cJSON_AddStringToObject(output.get(), "errors", result.errors);
+    char* json = cJSON_PrintUnformatted(output.get());
+    if (!json) return send_status(req, "503 Service Unavailable", "Could not encode diagnostics result");
+    const esp_err_t sent = send_json(req, json);
+    cJSON_free(json);
+    return sent;
 }
 
 esp_err_t WebServer::handle_post_ota(httpd_req_t* req)

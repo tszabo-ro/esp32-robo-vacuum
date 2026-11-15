@@ -20,6 +20,14 @@ struct RobotStatus {
     robot_response::Diagnostic alert;
 };
 
+struct LdsDiagnostics {
+    static constexpr size_t SCAN_BYTES = 16384;
+    char motors[1024] = {};
+    char errors[512] = {};
+    const char* message = "Test not started";
+    bool cleanup_ok = true;
+};
+
 // Polls the Neato D5 over its UART and keeps a small, thread-safe status cache.
 class NeatoRobot {
 public:
@@ -33,6 +41,10 @@ public:
     bool suspended() const { return suspended_; }
     RobotStatus status() const;
     bool command(const char* action);
+    // Synchronous, bounded scanner test. Caller supplies SCAN_BYTES of storage.
+    // Serializes with robot commands/polling; always attempts cleanup after
+    // entering test mode, including on a timeout or malformed scan response.
+    bool test_lds(LdsDiagnostics& result, char* scan);
 
 private:
     bool ensure_set_event_key(SerialConsole::Traffic traffic);

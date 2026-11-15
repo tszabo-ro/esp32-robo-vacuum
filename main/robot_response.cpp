@@ -1,6 +1,7 @@
 #include "robot_response.h"
 
 #include <cstdint>
+#include <charconv>
 #include <cstring>
 
 namespace robot_response {
@@ -46,6 +47,35 @@ bool copy_trimmed(std::string_view value, char* out, size_t out_size)
     return true;
 }
 }  // namespace
+
+LdsScanSummary summarize_lds_scan(std::string_view response)
+{
+    LdsScanSummary result;
+    bool seen[360] = {};
+    while (!response.empty()) {
+        const size_t newline = response.find('\n');
+        auto line = response.substr(0, newline);
+        response = newline == std::string_view::npos ? std::string_view{} : response.substr(newline + 1);
+        unsigned values[4] = {};
+        bool valid = true;
+        for (unsigned i = 0; i < 4; ++i) {
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+            const size_t end = line.find_first_of(",\r \t");
+            const auto field = line.substr(0, end);
+            const auto parsed = std::from_chars(field.data(), field.data() + field.size(), values[i], i == 3 ? 16 : 10);
+            if (parsed.ec != std::errc{} || parsed.ptr != field.data() + field.size()) { valid = false; break; }
+            if (i < 3) {
+                if (end == std::string_view::npos || line[end] != ',') { valid = false; break; }
+                line.remove_prefix(end + 1);
+            }
+        }
+        if (!valid || values[0] >= 360 || seen[values[0]]) continue;
+        seen[values[0]] = true;
+        ++result.points;
+        if (values[1] > 0 && values[3] == 0) ++result.valid_points;
+    }
+    return result;
+}
 
 bool parse_errors(std::string_view response, Diagnostic& error, Diagnostic& alert)
 {
